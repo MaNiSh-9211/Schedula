@@ -8,6 +8,7 @@ import com.schedula.persistence.ExecutionStore;
 import com.schedula.persistence.Fence;
 import com.schedula.persistence.JobStore;
 import com.schedula.queue.PostgresQueue;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -34,15 +35,18 @@ public class DispatchService {
     private final ExecutionStore executions;
     private final EventStore events;
     private final Fence fence;
+    private final long leaseDurationMs;
 
     public DispatchService(TransactionTemplate tx, JdbcTemplate jdbc, PostgresQueue queue,
-                           JobStore jobs, ExecutionStore executions, EventStore events, Fence fence) {
+                           JobStore jobs, ExecutionStore executions, EventStore events, Fence fence,
+                           @Value("${schedula.queue.visibility-timeout-ms:300000}") long leaseDurationMs) {
         this.tx = tx;
         this.queue = queue;
         this.jobs = jobs;
         this.executions = executions;
         this.events = events;
         this.fence = fence;
+        this.leaseDurationMs = leaseDurationMs;
     }
 
     public List<Claimed> claimAndDispatch(UUID workerId, int batch, long visibilityTimeoutMs) {
@@ -57,8 +61,10 @@ public class DispatchService {
                     continue;
                 }
                 long token = fence.nextToken(Fence.EXECUTION);
-                JobExecution exec = executions.create(m.jobId(), m.deliverCount(), token, workerId);
+                JobExecution exec = executions.create(m.jobId(), m.deliverCount(), token,
+                        workerId, leaseDurationMs);
                 jobs.incrementAttempts(m.jobId());
+                queue.attachExecution(m.id(), exec.id());
                 events.append(m.jobId(), exec.id(), "EXECUTION_LEASE_GRANTED", "dispatcher",
                         "attempt " + m.deliverCount() + " -> worker " + workerId, token);
                 out.add(new Claimed(m, exec, token));

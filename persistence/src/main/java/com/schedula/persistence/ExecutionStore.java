@@ -26,14 +26,40 @@ public class ExecutionStore {
         this.events = events;
     }
 
-    public JobExecution create(UUID jobId, int attemptNo, long fencingToken, UUID workerId) {
+    public JobExecution create(UUID jobId, int attemptNo, long fencingToken, UUID workerId,
+                               long leaseDurationMs) {
         UUID execId = com.schedula.common.ids.UuidV7.generate();
         jdbc.update("""
-                        INSERT INTO job_executions (id, job_id, attempt_no, status, worker_id, fencing_token)
-                        VALUES (?, ?, ?, 'PENDING', ?, ?)
+                        INSERT INTO job_executions (id, job_id, attempt_no, status, worker_id,
+                            fencing_token, lease_expires_at)
+                        VALUES (?, ?, ?, 'PENDING', ?, ?, now() + (? * interval '1 millisecond'))
                         """,
-                execId, jobId, attemptNo, workerId, fencingToken);
+                execId, jobId, attemptNo, workerId, fencingToken, (double) leaseDurationMs);
         return findById(execId).orElseThrow();
+    }
+
+    public record Renewal(boolean renewed, String jobStatus) {
+    }
+
+    /**
+     * Extend the lease if (and only if) we are still the current owner. Also reports the
+     * owning job's status so the worker learns about cancellation requests on the renewal
+     * path instead of needing a separate control channel.
+     */
+    public Renewal renewLease(UUID execId, UUID workerId, long fencingToken, long extendMs) {
+        Integer renewed = jdbc.queryForObject("""
+                        WITH moved AS (
+                            UPDATE job_executions SET lease_expires_at = now() + (? * interval '1 millisecond')
+                            WHERE id = ? AND worker_id = ? AND fencing_token = ? AND status = 'RUNNING'
+                            RETURNING id
+                        )
+                        SELECT count(*) FROM moved
+                        """, Integer.class, (double) extendMs, execId, workerId, fencingToken);
+        String jobStatus = jdbc.queryForObject("""
+                        SELECT j.status FROM job_executions e JOIN jobs j ON j.id = e.job_id
+                        WHERE e.id = ?
+                        """, String.class, execId);
+        return new Renewal(renewed != 0, jobStatus);
     }
 
     public Optional<JobExecution> findById(UUID execId) {

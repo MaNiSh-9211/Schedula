@@ -65,4 +65,21 @@ public class WorkerStore {
                 Integer.class, workerId);
         return c == null ? 0 : c;
     }
+
+    /** Failure detector (advisory): silence past thresholds degrades status, never leases. */
+    public int markUnhealthyPast(long silentMs) {
+        return jdbc.update("""
+                        UPDATE workers SET status = 'UNHEALTHY'
+                        WHERE status = 'HEALTHY'
+                          AND last_heartbeat_at < now() - (? * interval '1 millisecond')
+                        """, (double) silentMs);
+    }
+
+    public int markDeadPast(long silentMs) {
+        return jdbc.update("""
+                        UPDATE workers SET status = 'DEAD'
+                        WHERE status IN ('HEALTHY', 'UNHEALTHY', 'DRAINING')
+                          AND last_heartbeat_at < now() - (? * interval '1 millisecond')
+                        """, (double) silentMs);
+    }
 }

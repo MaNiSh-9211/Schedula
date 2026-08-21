@@ -92,6 +92,14 @@ public class PostgresQueue {
                         """, messageId, claimOwner) == 1;
     }
 
+    /** Extend an active claim (visibility timeout renewal); false if ownership was lost. */
+    public boolean extendClaim(UUID messageId, UUID claimOwner, long extendMs) {
+        return jdbc.update("""
+                        UPDATE queue_messages SET claim_expires_at = now() + (? * interval '1 millisecond')
+                        WHERE id = ? AND claim_owner = ? AND status = 'CLAIMED'
+                        """, (double) extendMs, messageId, claimOwner) == 1;
+    }
+
     public boolean nack(UUID messageId, UUID claimOwner, long delayMs) {
         return jdbc.update("""
                         UPDATE queue_messages SET status = 'READY', claim_owner = NULL,
@@ -165,10 +173,73 @@ public class PostgresQueue {
                         """, messageId, claimOwner) == 1;
     }
 
+    /** Links the execution created at dispatch time so recovery can find it later. */
+    public void attachExecution(UUID messageId, UUID executionId) {
+        jdbc.update("UPDATE queue_messages SET job_execution_id = ? WHERE id = ?",
+                executionId, messageId);
+    }
+
     public long depth(String queueName) {
         Long d = jdbc.queryForObject(
                 "SELECT count(*) FROM queue_messages WHERE queue_name = ? AND status = 'READY'",
                 Long.class, queueName);
         return d == null ? 0 : d;
+    }
+
+    // --- DLQ administration -------------------------------------------------------
+
+    public record DeadLetter(UUID messageId, UUID jobId, UUID tenantId, String jobType,
+                             int deliverCount, Instant enqueuedAt, Instant resolvedAt,
+                             String errorClass, String errorDetail) {
+    }
+
+    public java.util.List<DeadLetter> listDeadLetters(String jobTypeOrNull, int limit, int offset) {
+        StringBuilder sql = new StringBuilder("""
+                SELECT m.id AS message_id, m.job_id, m.tenant_id, j.job_type,
+                       m.deliver_count, m.enqueued_at, m.resolved_at,
+                       e.error_class, e.error_detail
+                FROM queue_messages m
+                JOIN jobs j ON j.id = m.job_id
+                LEFT JOIN job_executions e ON e.id = (
+                    SELECT id FROM job_executions WHERE job_id = m.job_id
+                    ORDER BY attempt_no DESC LIMIT 1)
+                WHERE m.status = 'DEADLETTERED'
+                """);
+        var args = new java.util.ArrayList<Object>();
+        if (jobTypeOrNull != null && !jobTypeOrNull.isBlank()) {
+            sql.append(" AND j.job_type = ?");
+            args.add(jobTypeOrNull);
+        }
+        sql.append(" ORDER BY m.enqueued_at DESC LIMIT ? OFFSET ?");
+        args.add(limit);
+        args.add(offset);
+        return jdbc.query(sql.toString(), (rs, i) -> new DeadLetter(
+                MappersQ.uuid(rs, "message_id"),
+                MappersQ.uuid(rs, "job_id"),
+                MappersQ.uuid(rs, "tenant_id"),
+                rs.getString("job_type"),
+                rs.getInt("deliver_count"),
+                MappersQ.instant(rs, "enqueued_at"),
+                MappersQ.instant(rs, "resolved_at"),
+                rs.getString("error_class"),
+                rs.getString("error_detail")), args.toArray());
+    }
+
+    public boolean resolveDeadLetter(java.util.UUID messageId) {
+        return jdbc.update("""
+                        UPDATE queue_messages SET resolved_at = now()
+                        WHERE id = ? AND status = 'DEADLETTERED' AND resolved_at IS NULL
+                        """, messageId) == 1;
+    }
+
+    public DeadLetter findDeadLetter(java.util.UUID messageId) {
+        return listDeadLetters(null, 200, 0).stream()
+                .filter(d -> d.messageId().equals(messageId))
+                .findFirst().orElse(null);
+    }
+
+    public int deleteDeadLetter(java.util.UUID messageId) {
+        return jdbc.update("DELETE FROM queue_messages WHERE id = ? AND status = 'DEADLETTERED'",
+                messageId);
     }
 }
