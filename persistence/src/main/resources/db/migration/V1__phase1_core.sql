@@ -116,9 +116,11 @@ CREATE TABLE queue_messages (
     enqueued_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- available_at filtering happens at query time: now() is not IMMUTABLE and
+-- therefore not allowed inside an index predicate.
 CREATE INDEX idx_queue_ready
     ON queue_messages (queue_name, priority DESC, enqueue_seq)
-    WHERE status = 'READY' AND available_at <= now();
+    WHERE status = 'READY';
 
 CREATE INDEX idx_queue_claimed_expired
     ON queue_messages (claim_expires_at) WHERE status = 'CLAIMED';

@@ -97,6 +97,12 @@
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-failsafe-plugin</artifactId>
+          <configuration>
+            <!-- Docker Desktop 29 rejects docker-java's legacy v1.32 probes (min API 1.44) -->
+            <systemPropertyVariables>
+              <api.version>1.52</api.version>
+            </systemPropertyVariables>
+          </configuration>
           <executions>
             <execution>
               <goals>
