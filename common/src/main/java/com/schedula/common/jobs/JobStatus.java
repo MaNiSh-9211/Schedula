@@ -9,6 +9,7 @@ public enum JobStatus {
     QUEUED,
     DISPATCHED,
     RUNNING,
+    CANCELLING,
     RETRY_WAIT,
     PAUSED,
     COMPLETED,
@@ -26,8 +27,11 @@ public enum JobStatus {
             Map.entry(QUEUED, Set.of(DISPATCHED, PAUSED, CANCELLED)),
             // QUEUED/DEAD out of DISPATCHED are recovery edges taken only by the sweeper
             // when a claim expires without an ack (lease-loss redelivery / max deliveries).
-            Map.entry(DISPATCHED, Set.of(RUNNING, QUEUED, DEAD)),
-            Map.entry(RUNNING, Set.of(COMPLETED, RETRY_WAIT, DEAD, FAILED_TERMINAL, QUEUED)),
+            Map.entry(DISPATCHED, Set.of(RUNNING, QUEUED, DEAD, CANCELLING)),
+            Map.entry(RUNNING, Set.of(COMPLETED, RETRY_WAIT, DEAD, FAILED_TERMINAL, QUEUED,
+                    CANCELLING)),
+            // cooperative cancellation: worker confirms, or sweeper closes after lease expiry
+            Map.entry(CANCELLING, Set.of(CANCELLED, DEAD)),
             Map.entry(RETRY_WAIT, Set.of(QUEUED, DEAD, CANCELLED)),
             Map.entry(PAUSED, Set.of(SCHEDULED, CANCELLED)));
 

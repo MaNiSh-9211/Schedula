@@ -43,13 +43,15 @@ class JobStatusTransitionsTest {
     }
 
     @Test
-    void deadIsReachableOnlyFromRunningDispatchedOrRetryWait() {
+    void deadIsReachableOnlyFromRunningDispatchedCancellingOrRetryWait() {
         assertThat(RUNNING.canTransitionTo(DEAD)).isTrue();
         assertThat(RETRY_WAIT.canTransitionTo(DEAD)).isTrue();
-        // sweeper edge: claim expired with deliveries exhausted, execution never started
+        // sweeper edges: claim expired with deliveries exhausted, execution never started,
+        // or a cancellation that outlived every lease
         assertThat(DISPATCHED.canTransitionTo(DEAD)).isTrue();
+        assertThat(CANCELLING.canTransitionTo(DEAD)).isTrue();
         for (JobStatus s : values()) {
-            if (s == RUNNING || s == RETRY_WAIT || s == DISPATCHED) continue;
+            if (s == RUNNING || s == RETRY_WAIT || s == DISPATCHED || s == CANCELLING) continue;
             assertThat(s.canTransitionTo(DEAD)).as(s.name()).isFalse();
         }
     }
@@ -62,6 +64,17 @@ class JobStatusTransitionsTest {
         for (JobStatus s : Set.of(DISPATCHED, RUNNING, COMPLETED, FAILED_TERMINAL, DEAD, REJECTED)) {
             assertThat(s.canTransitionTo(CANCELLED)).as(s.name()).isFalse();
         }
+    }
+
+    @Test
+    void cancelReachableFromRunningViaCancellingOnly() {
+        assertThat(RUNNING.canTransitionTo(CANCELLING)).isTrue();
+        assertThat(DISPATCHED.canTransitionTo(CANCELLING)).isTrue();
+        assertThat(RUNNING.canTransitionTo(CANCELLED)).isFalse();
+        assertThat(DISPATCHED.canTransitionTo(CANCELLED)).isFalse();
+        assertThat(CANCELLING.canTransitionTo(CANCELLED)).isTrue();
+        // sweeper closes stuck cancellations after lease expiry
+        assertThat(CANCELLING.canTransitionTo(DEAD)).isTrue();
     }
 
     @Test
