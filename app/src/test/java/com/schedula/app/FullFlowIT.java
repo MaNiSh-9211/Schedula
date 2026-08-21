@@ -28,11 +28,14 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+// NOTE: property set must stay IDENTICAL to ReliabilityIT's so Spring shares one cached
+// context (and one Postgres container) across both classes.
 @Testcontainers
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "schedula.scheduler.poll-interval-ms=100",
         "schedula.worker.poll-interval-ms=100",
-        "schedula.recovery.sweep-interval-ms=1000",
+        "schedula.recovery.sweep-interval-ms=500",
+        "schedula.queue.visibility-timeout-ms=4000",
         "logging.level.com.schedula=DEBUG"
 })
 @Import(FullFlowIT.TestHandlers.class)
@@ -68,7 +71,7 @@ class FullFlowIT {
         return res.getBody();
     }
 
-    private static Object jsonBody(String json) {
+    static Object jsonBody(String json) {
         try {
             return new com.fasterxml.jackson.databind.ObjectMapper().readValue(json, Map.class);
         } catch (Exception e) {

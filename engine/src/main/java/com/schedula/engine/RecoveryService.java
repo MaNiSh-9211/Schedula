@@ -1,9 +1,11 @@
 package com.schedula.engine;
 
 import com.schedula.common.jobs.JobStatus;
+import com.schedula.common.model.Job;
 import com.schedula.common.model.QueueMessage;
 import com.schedula.persistence.ExecutionStore;
 import com.schedula.persistence.JobStore;
+import com.schedula.persistence.WorkerStore;
 import com.schedula.queue.PostgresQueue;
 import com.schedula.queue.PostgresQueue.Reclaimed;
 import org.slf4j.Logger;
@@ -19,7 +21,8 @@ import java.util.Set;
  * dead OR merely slow/partitioned; either way the message is reclaimable and fencing tokens
  * make any late write from the old claimer inert (ADR-003/004).
  *
- * Runs periodically and once at startup (crash recovery for this node's previous life).
+ * Also owns liveness bookkeeping: workers silent past thresholds are marked UNHEALTHY/DEAD,
+ * and jobs whose CANCELLING request outlived their lease are closed as CANCELLED.
  */
 @Service
 public class RecoveryService {
@@ -29,22 +32,46 @@ public class RecoveryService {
     private final PostgresQueue queue;
     private final JobStore jobs;
     private final ExecutionStore executions;
+    private final WorkerStore workers;
     private final int maxDeliveries;
+    private final long unhealthyAfterMs;
+    private final long deadAfterMs;
 
     public RecoveryService(PostgresQueue queue, JobStore jobs, ExecutionStore executions,
-                           @Value("${schedula.queue.max-deliveries:5}") int maxDeliveries) {
+                           WorkerStore workers,
+                           @Value("${schedula.queue.max-deliveries:5}") int maxDeliveries,
+                           @Value("${schedula.recovery.unhealthy-after-ms:15000}") long unhealthyAfterMs,
+                           @Value("${schedula.recovery.dead-after-ms:60000}") long deadAfterMs) {
         this.queue = queue;
         this.jobs = jobs;
         this.executions = executions;
+        this.workers = workers;
         this.maxDeliveries = maxDeliveries;
+        this.unhealthyAfterMs = unhealthyAfterMs;
+        this.deadAfterMs = deadAfterMs;
     }
 
     public void recover() {
+        reclaimExpiredClaims();
+        markSilentWorkers();
+    }
+
+    private void reclaimExpiredClaims() {
         List<Reclaimed> reclaimed = queue.reclaimExpired(maxDeliveries);
         for (Reclaimed r : reclaimed) {
             QueueMessage m = r.message();
+            Job job = jobs.findById(m.jobId()).orElse(null);
+            boolean cancelRequested = job != null && job.status() == JobStatus.CANCELLING;
             if (m.jobExecutionId() != null) {
                 executions.abandon(m.jobExecutionId());
+            }
+            if (cancelRequested) {
+                // never redeliberately deliver work the operator asked to cancel
+                jobs.transition(m.jobId(), Set.of(JobStatus.CANCELLING), JobStatus.CANCELLED,
+                        "sweeper", "lease expired during cancellation");
+                queue.cancelReadyForJob(m.jobId());
+                log.info("job {} closed CANCELLED after lease expiry during cancellation", m.jobId());
+                continue;
             }
             if (r.deadlettered()) {
                 jobs.transition(m.jobId(), Set.of(JobStatus.RUNNING, JobStatus.DISPATCHED),
@@ -56,6 +83,15 @@ public class RecoveryService {
                 log.info("job {} requeued after expired claim (delivery {})",
                         m.jobId(), m.deliverCount());
             }
+        }
+    }
+
+    private void markSilentWorkers() {
+        int unhealthy = workers.markUnhealthyPast(unhealthyAfterMs);
+        int dead = workers.markDeadPast(deadAfterMs);
+        if (unhealthy > 0 || dead > 0) {
+            log.warn("failure detector: {} worker(s) UNHEALTHY, {} worker(s) DEAD",
+                    unhealthy, dead);
         }
     }
 }

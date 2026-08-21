@@ -74,6 +74,7 @@ public class WorkerLoop {
     private final Counter failedTotal;
     private final Counter retryScheduledTotal;
     private final Counter deadTotal;
+    private final Counter cancelledTotal;
     private final Timer executionDuration;
 
     public WorkerLoop(DispatchService dispatcher, ExecutionStore executions, JobStore jobs,
@@ -100,6 +101,7 @@ public class WorkerLoop {
         this.failedTotal = Counter.builder("schedula_job_failed_total").register(meters);
         this.retryScheduledTotal = Counter.builder("schedula_job_retried_total").register(meters);
         this.deadTotal = Counter.builder("schedula_job_dead_total").register(meters);
+        this.cancelledTotal = Counter.builder("schedula_job_cancelled_total").register(meters);
         this.executionDuration = Timer.builder("schedula_job_execution_duration")
                 .description("handler wall time")
                 .publishPercentiles(0.5, 0.95, 0.99)
@@ -224,12 +226,14 @@ public class WorkerLoop {
                 return;
             }
             long startNanos = clock.monotonicNanos();
+            CancellationToken token = new CancellationToken();
             log.debug("job {} invoking handler {}", msg.jobId(), job.jobType());
-            Outcome outcome = executeWithTimeout(handlerOpt.get(), job, claimed);
+            Outcome outcome = executeWithTimeout(handlerOpt.get(), job, claimed, token);
             log.debug("job {} handler returned {}", msg.jobId(), outcome.kind());
             executionDuration.record(clock.monotonicNanos() - startNanos, TimeUnit.NANOSECONDS);
             switch (outcome.kind()) {
                 case SUCCESS -> finishSuccess(claimed, job);
+                case CANCELLED -> finishCancelled(claimed, job);
                 case TIMEOUT -> handleFailure(claimed, job, "TIMEOUT", "execution timed out after "
                         + job.timeoutMs() + "ms", ErrorClass.TRANSIENT);
                 case ERROR -> handleFailure(claimed, job, outcome.errorClass(),
@@ -245,31 +249,87 @@ public class WorkerLoop {
     }
 
     private record Outcome(Kind kind, String errorClass, String message) {
-        enum Kind {SUCCESS, TIMEOUT, ERROR}
+        enum Kind {SUCCESS, TIMEOUT, ERROR, CANCELLED}
     }
 
-    private Outcome executeWithTimeout(JobHandler handler, Job job, Claimed claimed) {
+    /**
+     * Runs the handler while (a) enforcing the job timeout, (b) renewing the execution
+     * lease at lease/3 intervals, and (c) polling the job row on each renewal so
+     * CANCELLING requests reach the handler via its CancellationToken.
+     */
+    private Outcome executeWithTimeout(JobHandler handler, Job job, Claimed claimed,
+                                       CancellationToken token) {
         Future<?> future = handlerPool.submit(() -> {
             log.debug("handler thread starting for job {}", job.id());
             try {
-                handler.handle(context(job, claimed));
+                handler.handle(context(job, claimed, token));
                 log.debug("handler thread finished for job {}", job.id());
             } catch (Exception e) {
                 throw new Wrapped(e);
             }
         });
+        long deadline = clock.monotonicNanos() + TimeUnit.MILLISECONDS.toNanos(job.timeoutMs());
+        long renewalInterval = Math.max(250, props.visibilityTimeoutMs() / 3);
+        long nextRenewalAt = 0;
         try {
-            future.get(job.timeoutMs(), TimeUnit.MILLISECONDS);
-            return new Outcome(Outcome.Kind.SUCCESS, null, null);
-        } catch (TimeoutException e) {
+            while (true) {
+                long now = clock.monotonicNanos();
+                if (now >= deadline) {
+                    future.cancel(true);
+                    return new Outcome(Outcome.Kind.TIMEOUT, "TIMEOUT", "timeout");
+                }
+                try {
+                    future.get(Math.min(200, TimeUnit.NANOSECONDS.toMillis(deadline - now)),
+                            TimeUnit.MILLISECONDS);
+                    break;
+                } catch (TimeoutException notDoneYet) {
+                    // fall through to renewal / cancellation checks below
+                }
+                if (now >= nextRenewalAt) {
+                    nextRenewalAt = now + TimeUnit.MILLISECONDS.toNanos(renewalInterval);
+                    try {
+                        var renewal = executions.renewLease(claimed.execution().id(),
+                                props.workerId(), claimed.fencingToken(), props.visibilityTimeoutMs());
+                        boolean claimExtended = queue.extendClaim(claimed.message().id(),
+                                props.workerId(), props.visibilityTimeoutMs());
+                        if (!renewal.renewed() || !claimExtended) {
+                            log.warn("lease/claim renewal rejected for execution {}; ownership lost",
+                                    claimed.execution().id());
+                            token.cancel();
+                        } else if ("CANCELLING".equals(renewal.jobStatus())) {
+                            log.info("cancellation requested for job {}", job.id());
+                            token.cancel();
+                        }
+                    } catch (RuntimeException dbError) {
+                        log.warn("lease renewal failed: {}", dbError.toString());
+                    }
+                }
+                if (token.isCancelled()) {
+                    // grace period: cooperative handlers exit promptly; stubborn ones are cancelled
+                    try {
+                        future.get(Math.min(2_000,
+                                TimeUnit.NANOSECONDS.toMillis(deadline - clock.monotonicNanos())),
+                                TimeUnit.MILLISECONDS);
+                    } catch (TimeoutException e) {
+                        future.cancel(true);
+                    }
+                    return new Outcome(Outcome.Kind.CANCELLED, null, null);
+                }
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
             future.cancel(true);
-            return new Outcome(Outcome.Kind.TIMEOUT, "TIMEOUT", "timeout");
-        } catch (Exception e) {
+            return new Outcome(Outcome.Kind.CANCELLED, null, null);
+        } catch (java.util.concurrent.ExecutionException e) {
             Throwable cause = e.getCause() instanceof Wrapped w ? w.getCause() : e;
             String cls = cause instanceof ClassifiedException ce ? ce.errorClass().name()
                     : guessClass(cause);
             return new Outcome(Outcome.Kind.ERROR, cls, String.valueOf(cause));
         }
+        if (token.isCancelled()) {
+            return new Outcome(Outcome.Kind.CANCELLED, null, null);
+        }
+        return new Outcome(Outcome.Kind.SUCCESS, null, null);
     }
 
     private static final class Wrapped extends RuntimeException {
@@ -294,10 +354,22 @@ public class WorkerLoop {
         }
     }
 
-    private JobContext context(Job job, Claimed claimed) {
+    private JobContext context(Job job, Claimed claimed, CancellationToken token) {
         return new JobContext(job.id(), job.tenantId(), job.jobType(), job.payloadJson(),
                 job.tenantId() + ":" + job.id(), claimed.message().deliverCount(),
-                claimed.execution().id(), claimed.fencingToken());
+                claimed.execution().id(), claimed.fencingToken(), token);
+    }
+
+    /** Cooperative cancellation confirmed by the worker: CANCELLING -> CANCELLED, ack. */
+    private void finishCancelled(Claimed claimed, Job job) {
+        executions.finish(claimed.execution().id(), ExecStatus.CANCELLED, "CANCELLED",
+                "cancelled cooperatively", claimed.fencingToken());
+        boolean moved = jobs.transition(job.id(), Set.of(JobStatus.CANCELLING),
+                JobStatus.CANCELLED, "worker:" + props.workerId(), "handler acknowledged cancel");
+        if (moved) {
+            queue.ack(claimed.message().id(), props.workerId());
+            cancelledTotal.increment();
+        }
     }
 
     private void finishSuccess(Claimed claimed, Job job) {
@@ -317,8 +389,8 @@ public class WorkerLoop {
                 claimed.fencingToken());
         RetryPolicy policy = RetryPolicy.fromJson(job.retryPolicyJson());
         boolean retryable = classified.retryableByDefault();
-        // attempts_made is incremented at dispatch time and includes the current attempt
-        boolean attemptsLeft = job.attemptsMade() < policy.maxAttempts();
+        // the job row's max_attempts is authoritative; policy shapes only the delays
+        boolean attemptsLeft = job.attemptsMade() < job.maxAttempts();
         if (retryable && attemptsLeft) {
             long delay = DelayCalculator.delayMs(policy, job.attemptsMade() + 1, random);
             boolean moved = jobs.markRetryEligible(job.id(), clock.now().plusMillis(delay),

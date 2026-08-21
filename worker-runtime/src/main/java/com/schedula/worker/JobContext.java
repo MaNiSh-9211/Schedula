@@ -11,5 +11,12 @@ public record JobContext(
         String idempotencyKey,
         int attempt,
         UUID executionId,
-        long fencingToken) {
+        long fencingToken,
+        CancellationToken cancellation) {
+
+    public JobContext {
+        if (cancellation == null) {
+            cancellation = new CancellationToken();
+        }
+    }
 }

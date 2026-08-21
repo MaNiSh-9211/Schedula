@@ -35,7 +35,13 @@ public final class BuiltInHandlers {
     public static class SleepHandler implements com.schedula.worker.JobHandler {
         @Override
         public void handle(JobContext ctx) throws Exception {
-            Thread.sleep(extractMs(ctx.payloadJson()));
+            long remaining = extractMs(ctx.payloadJson());
+            // cooperative: wake every 50ms to observe the cancellation token
+            while (remaining > 0 && !ctx.cancellation().isCancelled()) {
+                long slice = Math.min(50, remaining);
+                Thread.sleep(slice);
+                remaining -= slice;
+            }
         }
 
         private static long extractMs(String json) {

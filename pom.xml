@@ -102,6 +102,7 @@
             <systemPropertyVariables>
               <api.version>1.52</api.version>
             </systemPropertyVariables>
+            <argLine>-Xmx768m -XX:MaxDirectMemorySize=256m</argLine>
           </configuration>
           <executions>
             <execution>

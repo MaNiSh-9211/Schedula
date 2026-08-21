@@ -5,6 +5,7 @@ import com.schedula.common.jobs.JobStatus;
 import com.schedula.common.model.Job;
 import com.schedula.common.model.JobExecution;
 import com.schedula.common.retry.RetryPolicy;
+import com.schedula.persistence.AuditStore;
 import com.schedula.persistence.ExecutionStore;
 import com.schedula.persistence.JobStore;
 import com.schedula.queue.PostgresQueue;
@@ -47,14 +48,16 @@ public class JobsController {
     private final ExecutionStore executions;
     private final PostgresQueue queue;
     private final TransactionTemplate tx;
+    private final AuditStore audit;
     private final Counter submittedTotal;
 
     public JobsController(JobStore jobs, ExecutionStore executions, PostgresQueue queue,
-                          TransactionTemplate tx, MeterRegistry meters) {
+                          TransactionTemplate tx, AuditStore audit, MeterRegistry meters) {
         this.jobs = jobs;
         this.executions = executions;
         this.queue = queue;
         this.tx = tx;
+        this.audit = audit;
         this.submittedTotal = Counter.builder("schedula_job_submitted_total").register(meters);
     }
 
@@ -102,7 +105,11 @@ public class JobsController {
                 Math.min(limit, 200), offset);
     }
 
-    /** Queued/scheduled cancellation is synchronous and atomic with message removal. */
+    /**
+     * Queued/scheduled cancellation is synchronous and atomic with message removal.
+     * Running work enters CANCELLING: the worker learns about it on its next lease renewal
+     * and the handler is expected to exit cooperatively via its CancellationToken.
+     */
     @PostMapping("/{id}/cancel")
     ResponseEntity<Job> cancel(@PathVariable UUID id) {
         Job job = jobs.findById(id).orElseThrow(() -> new NotFoundException("job", id));
@@ -110,14 +117,20 @@ public class JobsController {
             throw new IllegalTransitionException(job.status(), JobStatus.CANCELLED);
         }
         if (job.status() == JobStatus.RUNNING || job.status() == JobStatus.DISPATCHED) {
-            // cooperative cancellation of running work lands in phase 2 (CANCELLING state)
-            throw new IllegalTransitionException(job.status(), JobStatus.CANCELLED);
+            boolean cancelling = jobs.transition(id, Set.of(JobStatus.RUNNING, JobStatus.DISPATCHED),
+                    JobStatus.CANCELLING, "api:cancel", "cooperative cancellation requested");
+            if (!cancelling) {
+                throw new IllegalTransitionException(job.status(), JobStatus.CANCELLING);
+            }
+            audit.append("api", job.tenantId(), "JOB_CANCEL_REQUESTED", "job", id.toString(), null);
+            return ResponseEntity.accepted().body(jobs.findById(id).orElseThrow());
         }
         boolean moved = tx.execute(s -> jobs.transition(id,
                 Set.of(JobStatus.SCHEDULED, JobStatus.QUEUED, JobStatus.PAUSED, JobStatus.RETRY_WAIT),
                 JobStatus.CANCELLED, "api:cancel", "requested via api"));
         if (Boolean.TRUE.equals(moved)) {
             queue.cancelReadyForJob(id);
+            audit.append("api", job.tenantId(), "JOB_CANCELLED", "job", id.toString(), null);
             return ResponseEntity.ok(jobs.findById(id).orElseThrow());
         }
         throw new IllegalTransitionException(job.status(), JobStatus.CANCELLED);
