@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: schedula
+      POSTGRES_PASSWORD: schedula
+      POSTGRES_DB: schedula
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U schedula"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - schedula-pgdata:/var/lib/postgresql/data
+
+  app:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SCHEDULA_DB_URL: jdbc:postgresql://postgres:5432/schedula
+      SCHEDULA_DB_USER: schedula
+      SCHEDULA_DB_PASSWORD: schedula
+    ports:
+      - "8080:8080"
+
+volumes:
+  schedula-pgdata:
