@@ -58,6 +58,7 @@ public class DispatchService {
                 }
                 long token = fence.nextToken(Fence.EXECUTION);
                 JobExecution exec = executions.create(m.jobId(), m.deliverCount(), token, workerId);
+                jobs.incrementAttempts(m.jobId());
                 events.append(m.jobId(), exec.id(), "EXECUTION_LEASE_GRANTED", "dispatcher",
                         "attempt " + m.deliverCount() + " -> worker " + workerId, token);
                 out.add(new Claimed(m, exec, token));

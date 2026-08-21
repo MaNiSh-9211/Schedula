@@ -65,10 +65,17 @@ public class SchedulerLoop {
 
     private void enqueueDueScheduled() {
         Instant now = clock.now();
-        for (Job job : jobs.findDueScheduled(now, 100)) {
+        var due = jobs.findDueScheduled(now, 100);
+        if (!due.isEmpty()) {
+            log.debug("scheduler found {} due scheduled jobs", due.size());
+        }
+        for (Job job : due) {
             boolean moved = jobs.transition(job.id(), Set.of(JobStatus.SCHEDULED),
                     JobStatus.QUEUED, "scheduler", "due at " + job.scheduledFor());
-            if (!moved) continue;
+            if (!moved) {
+                log.warn("job {} left SCHEDULED before enqueue; skipping", job.id());
+                continue;
+            }
             queue.enqueue(job.id(), job.tenantId(), null, job.priority(), now);
             if (job.scheduledFor() != null) {
                 schedulerLag.record(java.time.Duration.between(job.scheduledFor(), now));

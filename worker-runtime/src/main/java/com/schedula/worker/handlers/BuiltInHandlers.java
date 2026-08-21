@@ -5,7 +5,6 @@ import com.schedula.worker.ClassifiedException;
 import com.schedula.worker.JobContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Component;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -23,7 +22,6 @@ public final class BuiltInHandlers {
     private BuiltInHandlers() {
     }
 
-    @Component
     public static class LogHandler implements com.schedula.worker.JobHandler {
         private static final Logger log = LoggerFactory.getLogger("schedula.job.log");
 
@@ -34,7 +32,6 @@ public final class BuiltInHandlers {
         }
     }
 
-    @Component
     public static class SleepHandler implements com.schedula.worker.JobHandler {
         @Override
         public void handle(JobContext ctx) throws Exception {
@@ -48,7 +45,6 @@ public final class BuiltInHandlers {
         }
     }
 
-    @Component
     public static class HttpCallbackHandler implements com.schedula.worker.JobHandler {
 
         private final HttpClient client = HttpClient.newBuilder()

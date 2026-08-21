@@ -191,17 +191,32 @@ public class WorkerLoop {
         inflight.put(exec.id(), latch);
         try {
             if (!executions.start(exec.id(), props.workerId(), claimed.fencingToken())) {
+                log.warn("execution start rejected for {} (stale lease?); cancelling claim",
+                        exec.id());
                 queue.cancelClaimed(msg.id(), props.workerId());
                 return;
             }
+            boolean jobRunning = jobs.transition(msg.jobId(), Set.of(JobStatus.DISPATCHED),
+                    JobStatus.RUNNING, "worker:" + props.workerId(),
+                    "attempt " + msg.deliverCount() + " started");
+            if (!jobRunning) {
+                log.warn("job {} could not enter RUNNING (cancelled?); abandoning attempt",
+                        msg.jobId());
+                executions.abandon(exec.id());
+                queue.cancelClaimed(msg.id(), props.workerId());
+                return;
+            }
+            log.debug("executing job {} attempt {}", msg.jobId(), msg.deliverCount());
             startedTotal.increment();
             Job job = jobs.findById(msg.jobId()).orElse(null);
             if (job == null) {
+                log.warn("execution {}: job row {} missing", exec.id(), msg.jobId());
                 finishFailed(claimed, "VALIDATION", "job row missing");
                 return;
             }
             var handlerOpt = registry.find(job.jobType());
             if (handlerOpt.isEmpty()) {
+                log.warn("no handler registered for job type '{}'", job.jobType());
                 finishFailed(claimed, ErrorClass.PERMANENT.name(),
                         "no handler registered for type " + job.jobType());
                 markJobOutcome(claimed, job, ExecStatus.FAILED, ErrorClass.PERMANENT.name(),
@@ -209,7 +224,9 @@ public class WorkerLoop {
                 return;
             }
             long startNanos = clock.monotonicNanos();
+            log.debug("job {} invoking handler {}", msg.jobId(), job.jobType());
             Outcome outcome = executeWithTimeout(handlerOpt.get(), job, claimed);
+            log.debug("job {} handler returned {}", msg.jobId(), outcome.kind());
             executionDuration.record(clock.monotonicNanos() - startNanos, TimeUnit.NANOSECONDS);
             switch (outcome.kind()) {
                 case SUCCESS -> finishSuccess(claimed, job);
@@ -233,8 +250,10 @@ public class WorkerLoop {
 
     private Outcome executeWithTimeout(JobHandler handler, Job job, Claimed claimed) {
         Future<?> future = handlerPool.submit(() -> {
+            log.debug("handler thread starting for job {}", job.id());
             try {
                 handler.handle(context(job, claimed));
+                log.debug("handler thread finished for job {}", job.id());
             } catch (Exception e) {
                 throw new Wrapped(e);
             }
@@ -298,7 +317,8 @@ public class WorkerLoop {
                 claimed.fencingToken());
         RetryPolicy policy = RetryPolicy.fromJson(job.retryPolicyJson());
         boolean retryable = classified.retryableByDefault();
-        boolean attemptsLeft = job.attemptsMade() + 1 < policy.maxAttempts();
+        // attempts_made is incremented at dispatch time and includes the current attempt
+        boolean attemptsLeft = job.attemptsMade() < policy.maxAttempts();
         if (retryable && attemptsLeft) {
             long delay = DelayCalculator.delayMs(policy, job.attemptsMade() + 1, random);
             boolean moved = jobs.markRetryEligible(job.id(), clock.now().plusMillis(delay),
@@ -324,6 +344,7 @@ public class WorkerLoop {
     }
 
     private void finishFailed(Claimed claimed, String errorClass, String detail) {
+        log.warn("execution {} failed: {} - {}", claimed.execution().id(), errorClass, detail);
         executions.finish(claimed.execution().id(), ExecStatus.FAILED, errorClass, detail,
                 claimed.fencingToken());
         failedTotal.increment();
