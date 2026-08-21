@@ -33,9 +33,18 @@ public class JobStore {
                          Instant scheduledFor, UUID scheduleId, String idempotencyKey) {
     }
 
-    public Job create(Insert draft) {
+    public record CreationResult(Job job, boolean fresh) {
+    }
+
+    public CreationResult createReturningFreshness(Insert draft) {
         UUID id = com.schedula.common.ids.UuidV7.generate();
-        JobStatus initial = draft.scheduledFor() == null ? JobStatus.CREATED : JobStatus.SCHEDULED;
+        // immediate jobs are born SCHEDULED with scheduled_for=now so the standard due
+        // path (SCHEDULED -> QUEUED) is the only eligibility mechanism to reason about
+        Instant scheduledFor = draft.scheduledFor() == null ? Instant.now() : draft.scheduledFor();
+        JobStatus initial = JobStatus.SCHEDULED;
+        int maxAttempts = draft.maxAttempts() == null
+                ? com.schedula.common.retry.RetryPolicy.DEFAULT.maxAttempts() : draft.maxAttempts();
+        long timeoutMs = draft.timeoutMs() == null ? 60_000L : draft.timeoutMs();
         try {
             jdbc.update("""
                             INSERT INTO jobs (id, tenant_id, job_type, priority, status, payload_json,
@@ -44,18 +53,24 @@ public class JobStore {
                             VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, ?::jsonb, ?, ?, ?, ?)
                             """,
                     id, draft.tenantId(), draft.jobType(), draft.priority(), initial.name(),
-                    Mappers.canonicalize(draft.payloadJson()), draft.maxAttempts(),
-                    Mappers.canonicalize(draft.retryPolicyJson()), draft.timeoutMs(),
-                    ts(draft.scheduledFor()), draft.scheduleId(), draft.idempotencyKey());
+                    Mappers.canonicalize(draft.payloadJson()), maxAttempts,
+                    Mappers.canonicalize(draft.retryPolicyJson()), timeoutMs,
+                    ts(scheduledFor), draft.scheduleId(), draft.idempotencyKey());
             events.append(id, null, EventTypes.JOB_CREATED, "api",
-                    initial == JobStatus.SCHEDULED ? "scheduled submission" : "immediate submission", null);
-            return findById(id).orElseThrow();
+                    "submission", null);
+            return new CreationResult(findById(id).orElseThrow(), true);
         } catch (DuplicateKeyException e) {
             if (draft.idempotencyKey() != null) {
-                return findByTenantAndIdempotencyKey(draft.tenantId(), draft.idempotencyKey()).orElseThrow(() -> e);
+                Job existing = findByTenantAndIdempotencyKey(draft.tenantId(), draft.idempotencyKey())
+                        .orElseThrow(() -> e);
+                return new CreationResult(existing, false);
             }
             throw e;
         }
+    }
+
+    public Job create(Insert draft) {
+        return createReturningFreshness(draft).job();
     }
 
     public Optional<Job> findById(UUID jobId) {

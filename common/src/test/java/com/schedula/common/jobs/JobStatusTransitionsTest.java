@@ -43,11 +43,13 @@ class JobStatusTransitionsTest {
     }
 
     @Test
-    void deadIsReachableOnlyFromRunningOrRetryWait() {
+    void deadIsReachableOnlyFromRunningDispatchedOrRetryWait() {
         assertThat(RUNNING.canTransitionTo(DEAD)).isTrue();
         assertThat(RETRY_WAIT.canTransitionTo(DEAD)).isTrue();
+        // sweeper edge: claim expired with deliveries exhausted, execution never started
+        assertThat(DISPATCHED.canTransitionTo(DEAD)).isTrue();
         for (JobStatus s : values()) {
-            if (s == RUNNING || s == RETRY_WAIT) continue;
+            if (s == RUNNING || s == RETRY_WAIT || s == DISPATCHED) continue;
             assertThat(s.canTransitionTo(DEAD)).as(s.name()).isFalse();
         }
     }

@@ -36,8 +36,10 @@ public class JobsController {
 
     public static final UUID DEFAULT_TENANT = UUID.fromString("00000000-0000-0000-0000-000000000001");
 
-    public record SubmitRequest(UUID tenantId, @NotBlank String jobType, String payload,
-                                Integer priority, Integer maxAttempts, String retryPolicy,
+    public record SubmitRequest(UUID tenantId, @NotBlank String jobType,
+                                com.fasterxml.jackson.databind.JsonNode payload,
+                                Integer priority, Integer maxAttempts,
+                                com.fasterxml.jackson.databind.JsonNode retryPolicy,
                                 Long timeoutMs, Instant scheduledFor) {
     }
 
@@ -64,22 +66,20 @@ public class JobsController {
     ResponseEntity<Job> submit(@RequestBody @Valid SubmitRequest req,
                                @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
         UUID tenantId = req.tenantId() == null ? DEFAULT_TENANT : req.tenantId();
-        RetryPolicy policy = req.retryPolicy() == null && req.maxAttempts() == null
-                ? RetryPolicy.DEFAULT
-                : RetryPolicy.fromJson(req.retryPolicy() == null ? "{}" : req.retryPolicy());
-        Job created = jobs.create(new JobStore.Insert(
+        String retryPolicyJson = req.retryPolicy() == null ? "{}" : req.retryPolicy().toString();
+        RetryPolicy policy = RetryPolicy.fromJson(retryPolicyJson);
+        var result = jobs.createReturningFreshness(new JobStore.Insert(
                 tenantId, req.jobType(), req.priority() == null ? 0 : req.priority(),
-                req.payload() == null ? "{}" : req.payload(),
+                req.payload() == null ? "{}" : req.payload().toString(),
                 req.maxAttempts() == null ? policy.maxAttempts() : req.maxAttempts(),
-                req.retryPolicy() == null ? "{}" : req.retryPolicy(),
+                retryPolicyJson,
                 req.timeoutMs() == null ? 60_000L : req.timeoutMs(),
                 req.scheduledFor(), null, idempotencyKey));
-        boolean isNew = created.status() == JobStatus.CREATED || created.status() == JobStatus.SCHEDULED;
-        if (isNew) {
+        if (result.fresh()) {
             submittedTotal.increment();
-            return ResponseEntity.created(URI.create("/v1/jobs/" + created.id())).body(created);
+            return ResponseEntity.created(URI.create("/v1/jobs/" + result.job().id())).body(result.job());
         }
-        return ResponseEntity.ok().body(created);
+        return ResponseEntity.ok().body(result.job());
     }
 
     @GetMapping("/{id}")

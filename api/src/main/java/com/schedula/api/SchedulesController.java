@@ -21,7 +21,8 @@ import java.util.UUID;
 public class SchedulesController {
 
     public record CreateRequest(UUID tenantId, @NotBlank String name, @NotBlank String jobType,
-                                String payload, @Positive long intervalMs,
+                                com.fasterxml.jackson.databind.JsonNode payload,
+                                @Positive long intervalMs,
                                 String missedPolicy) {
     }
 
@@ -36,7 +37,8 @@ public class SchedulesController {
         String policy = req.missedPolicy() == null ? "COALESCE" : req.missedPolicy();
         JobSchedule created = schedules.create(new ScheduleStore.Insert(
                 req.tenantId() == null ? JobsController.DEFAULT_TENANT : req.tenantId(),
-                req.name(), req.jobType(), req.payload() == null ? "{}" : req.payload(),
+                req.name(), req.jobType(),
+                req.payload() == null ? "{}" : req.payload().toString(),
                 req.intervalMs(), policy));
         return org.springframework.http.ResponseEntity
                 .created(URI.create("/v1/schedules/" + created.id())).body(created);
