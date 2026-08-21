@@ -1,0 +1,49 @@
+spring:
+  application:
+    name: schedula
+  datasource:
+    url: ${SCHEDULA_DB_URL:jdbc:postgresql://localhost:5432/schedula}
+    username: ${SCHEDULA_DB_USER:schedula}
+    password: ${SCHEDULA_DB_PASSWORD:schedula}
+    hikari:
+      maximum-pool-size: 10
+      data-source-properties:
+        options: "-c statement_timeout=5000"
+  flyway:
+    enabled: true
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+schedula:
+  roles:
+    api: true
+    scheduler: true
+    worker: true
+  scheduler:
+    poll-interval-ms: 250
+  recovery:
+    sweep-interval-ms: 5000
+  queue:
+    visibility-timeout-ms: 300000
+    max-deliveries: 5
+  worker:
+    concurrency: 8
+    batch-size: 16
+    poll-interval-ms: 250
+    heartbeat-interval-ms: 5000
+    drain-deadline-ms: 30000
+
+logging:
+  level:
+    com.schedula: INFO

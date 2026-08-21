@@ -1,0 +1,68 @@
+package com.schedula.persistence;
+
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Repository;
+
+import java.sql.Timestamp;
+import java.time.Instant;
+import java.util.UUID;
+
+@Repository
+public class WorkerStore {
+
+    private final JdbcTemplate jdbc;
+
+    public WorkerStore(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    public void register(UUID workerId, String name, String appVersion, int maxConcurrency) {
+        jdbc.update("""
+                        INSERT INTO workers (id, name, version, max_concurrency, status)
+                        VALUES (?, ?, ?, ?, 'HEALTHY')
+                        ON CONFLICT (id) DO UPDATE SET
+                            name = EXCLUDED.name,
+                            version = EXCLUDED.version,
+                            max_concurrency = EXCLUDED.max_concurrency,
+                            status = 'HEALTHY',
+                            last_heartbeat_at = now()
+                        """,
+                workerId, name, appVersion, maxConcurrency);
+    }
+
+    public void heartbeat(UUID workerId) {
+        jdbc.update("UPDATE workers SET last_heartbeat_at = now() WHERE id = ?", workerId);
+    }
+
+    public void setDraining(UUID workerId) {
+        jdbc.update("UPDATE workers SET status = 'DRAINING' WHERE id = ?", workerId);
+    }
+
+    public void deregister(UUID workerId) {
+        jdbc.update("DELETE FROM workers WHERE id = ?", workerId);
+    }
+
+    /** Capacity admission: increment only while under max_concurrency. Returns false when full. */
+    public boolean tryAcquireSlot(UUID workerId) {
+        Integer updated = jdbc.queryForObject("""
+                        WITH moved AS (
+                            UPDATE workers SET running_count = running_count + 1
+                            WHERE id = ? AND running_count < max_concurrency
+                            RETURNING id
+                        )
+                        SELECT count(*) FROM moved
+                        """, Integer.class, workerId);
+        return updated != 0;
+    }
+
+    public void releaseSlot(UUID workerId) {
+        jdbc.update("UPDATE workers SET running_count = GREATEST(running_count - 1, 0) WHERE id = ?",
+                workerId);
+    }
+
+    public int runningCount(UUID workerId) {
+        Integer c = jdbc.queryForObject("SELECT running_count FROM workers WHERE id = ?",
+                Integer.class, workerId);
+        return c == null ? 0 : c;
+    }
+}
