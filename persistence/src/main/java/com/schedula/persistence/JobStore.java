@@ -103,20 +103,46 @@ public class JobStore {
      */
     public boolean transition(UUID jobId, Set<JobStatus> expected, JobStatus target,
                               String actor, String reason) {
+        return transition(jobId, expected, target, actor, reason, null);
+    }
+
+    /**
+     * Guarded transition with optional leadership fencing: when fencingToken is present,
+     * the write only lands while that token is still the live lease (ADR-004). Stale
+     * leaders therefore cannot mutate state even mid-tick.
+     */
+    public boolean transition(UUID jobId, Set<JobStatus> expected, JobStatus target,
+                              String actor, String reason, Long leadershipFencingToken) {
         List<String> expectedNames = expected.stream().map(Enum::name).toList();
         String placeholders = String.join(",", expectedNames.stream().map(s -> "?").toList());
+        StringBuilder sql = new StringBuilder("""
+                WITH moved AS (
+                    UPDATE jobs SET status = ?, version = version + 1, updated_at = now()
+                    WHERE id = ? AND status IN (%s)
+                """.formatted(placeholders));
+        if (leadershipFencingToken != null) {
+            sql.append("""
+                    
+                      AND EXISTS (SELECT 1 FROM scheduler_leases l
+                                  WHERE l.resource_name = 'SCHEDULER_LEADER'
+                                    AND l.fencing_token = ?
+                                    AND l.expires_at > now())
+                    """);
+        }
+        sql.append("""
+                    
+                    RETURNING id
+                )
+                SELECT count(*) FROM moved
+                """);
         List<Object> args = new ArrayList<>();
         args.add(target.name());
         args.add(jobId);
         args.addAll(expectedNames);
-        int updated = jdbc.queryForObject("""
-                        WITH moved AS (
-                            UPDATE jobs SET status = ?, version = version + 1, updated_at = now()
-                            WHERE id = ? AND status IN (%s)
-                            RETURNING id
-                        )
-                        SELECT count(*) FROM moved
-                        """.formatted(placeholders), Integer.class, args.toArray());
+        if (leadershipFencingToken != null) {
+            args.add(leadershipFencingToken);
+        }
+        int updated = jdbc.queryForObject(sql.toString(), Integer.class, args.toArray());
         boolean ok = updated != 0;
         if (ok) {
             events.append(jobId, null, eventTypeFor(target), actor, reason, null);

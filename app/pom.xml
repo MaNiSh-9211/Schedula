@@ -32,6 +32,10 @@
     </dependency>
     <dependency>
       <groupId>com.schedula</groupId>
+      <artifactId>schedula-coordination</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.schedula</groupId>
       <artifactId>schedula-engine</artifactId>
     </dependency>
     <dependency>

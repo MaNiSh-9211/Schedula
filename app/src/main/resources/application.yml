@@ -34,6 +34,12 @@ schedula:
     poll-interval-ms: 250
   recovery:
     sweep-interval-ms: 5000
+    unhealthy-after-ms: 15000
+    dead-after-ms: 60000
+  coordinator:
+    probe-interval-ms: 1000
+    lease-ms: 15000
+    node-port: ${server.port}
   queue:
     visibility-timeout-ms: 300000
     max-deliveries: 5

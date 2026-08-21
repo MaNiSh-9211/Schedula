@@ -33,12 +33,14 @@ public class RecoveryService {
     private final JobStore jobs;
     private final ExecutionStore executions;
     private final WorkerStore workers;
+    private final com.schedula.coordination.Coordinator coordinator;
     private final int maxDeliveries;
     private final long unhealthyAfterMs;
     private final long deadAfterMs;
 
     public RecoveryService(PostgresQueue queue, JobStore jobs, ExecutionStore executions,
                            WorkerStore workers,
+                           com.schedula.coordination.Coordinator coordinator,
                            @Value("${schedula.queue.max-deliveries:5}") int maxDeliveries,
                            @Value("${schedula.recovery.unhealthy-after-ms:15000}") long unhealthyAfterMs,
                            @Value("${schedula.recovery.dead-after-ms:60000}") long deadAfterMs) {
@@ -46,17 +48,22 @@ public class RecoveryService {
         this.jobs = jobs;
         this.executions = executions;
         this.workers = workers;
+        this.coordinator = coordinator;
         this.maxDeliveries = maxDeliveries;
         this.unhealthyAfterMs = unhealthyAfterMs;
         this.deadAfterMs = deadAfterMs;
     }
 
     public void recover() {
-        reclaimExpiredClaims();
+        if (!coordinator.isLeader()) {
+            return;
+        }
+        long token = coordinator.fencingToken();
+        reclaimExpiredClaims(token);
         markSilentWorkers();
     }
 
-    private void reclaimExpiredClaims() {
+    private void reclaimExpiredClaims(long leadershipToken) {
         List<Reclaimed> reclaimed = queue.reclaimExpired(maxDeliveries);
         for (Reclaimed r : reclaimed) {
             QueueMessage m = r.message();
@@ -68,18 +75,18 @@ public class RecoveryService {
             if (cancelRequested) {
                 // never redeliberately deliver work the operator asked to cancel
                 jobs.transition(m.jobId(), Set.of(JobStatus.CANCELLING), JobStatus.CANCELLED,
-                        "sweeper", "lease expired during cancellation");
+                        "sweeper", "lease expired during cancellation", leadershipToken);
                 queue.cancelReadyForJob(m.jobId());
                 log.info("job {} closed CANCELLED after lease expiry during cancellation", m.jobId());
                 continue;
             }
             if (r.deadlettered()) {
                 jobs.transition(m.jobId(), Set.of(JobStatus.RUNNING, JobStatus.DISPATCHED),
-                        JobStatus.DEAD, "sweeper", "max deliveries exceeded");
+                        JobStatus.DEAD, "sweeper", "max deliveries exceeded", leadershipToken);
                 log.warn("job {} deadlettered after {} deliveries", m.jobId(), m.deliverCount());
             } else {
                 jobs.transition(m.jobId(), Set.of(JobStatus.RUNNING, JobStatus.DISPATCHED),
-                        JobStatus.QUEUED, "sweeper", "claim expired; redelivering");
+                        JobStatus.QUEUED, "sweeper", "claim expired; redelivering", leadershipToken);
                 log.info("job {} requeued after expired claim (delivery {})",
                         m.jobId(), m.deliverCount());
             }

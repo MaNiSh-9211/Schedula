@@ -37,16 +37,19 @@ public class SchedulerLoop {
     private final ScheduleStore schedules;
     private final PostgresQueue queue;
     private final Clock clock;
+    private final com.schedula.coordination.Coordinator coordinator;
     private final Timer schedulerLag;
     private final Counter scheduleTicksTotal;
     private final Counter missedOccurrencesTotal;
 
     public SchedulerLoop(JobStore jobs, ScheduleStore schedules, PostgresQueue queue,
-                         Clock clock, MeterRegistry meters) {
+                         Clock clock, com.schedula.coordination.Coordinator coordinator,
+                         MeterRegistry meters) {
         this.jobs = jobs;
         this.schedules = schedules;
         this.queue = queue;
         this.clock = clock;
+        this.coordinator = coordinator;
         this.schedulerLag = Timer.builder("schedula_scheduler_lag")
                 .description("dispatch time minus scheduled_for")
                 .publishPercentiles(0.5, 0.95, 0.99)
@@ -57,13 +60,18 @@ public class SchedulerLoop {
                 .register(meters);
     }
 
+    /** Leader-only: followers return immediately (fail-closed coordination, ADR-005). */
     public void tick() {
-        enqueueDueScheduled();
-        releaseDueRetries();
-        tickSchedules();
+        if (!coordinator.isLeader()) {
+            return;
+        }
+        long token = coordinator.fencingToken();
+        enqueueDueScheduled(token);
+        releaseDueRetries(token);
+        tickSchedules(token);
     }
 
-    private void enqueueDueScheduled() {
+    private void enqueueDueScheduled(long leadershipToken) {
         Instant now = clock.now();
         var due = jobs.findDueScheduled(now, 100);
         if (!due.isEmpty()) {
@@ -71,7 +79,7 @@ public class SchedulerLoop {
         }
         for (Job job : due) {
             boolean moved = jobs.transition(job.id(), Set.of(JobStatus.SCHEDULED),
-                    JobStatus.QUEUED, "scheduler", "due at " + job.scheduledFor());
+                    JobStatus.QUEUED, "scheduler", "due at " + job.scheduledFor(), leadershipToken);
             if (!moved) {
                 log.warn("job {} left SCHEDULED before enqueue; skipping", job.id());
                 continue;
@@ -84,21 +92,21 @@ public class SchedulerLoop {
     }
 
     /** Retry-wait jobs already have their (nacked) message; only the job state flips. */
-    private void releaseDueRetries() {
+    private void releaseDueRetries(long leadershipToken) {
         Instant now = clock.now();
         for (Job job : jobs.findDueRetries(now, 100)) {
             jobs.transition(job.id(), Set.of(JobStatus.RETRY_WAIT), JobStatus.QUEUED,
-                    "scheduler", "retry due");
+                    "scheduler", "retry due", leadershipToken);
         }
     }
 
-    private void tickSchedules() {
+    private void tickSchedules(long leadershipToken) {
         Instant now = clock.now();
         for (JobSchedule s : schedules.findDue(now, 50)) {
             Advance advance = NextFireCalculator.advance(s, now);
             if (!advance.hasMissed()) continue;
             boolean advanced = schedules.advanceFire(s.id(), s.version(),
-                    advance.newNextFireAt(), now);
+                    advance.newNextFireAt(), now, leadershipToken);
             if (!advanced) {
                 log.debug("schedule {} advance lost race; skipping tick", s.id());
                 continue;

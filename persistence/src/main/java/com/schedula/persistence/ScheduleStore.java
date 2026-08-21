@@ -70,16 +70,42 @@ public class ScheduleStore {
     /** CAS advance: only wins if version unchanged; prevents double-advance races. */
     public boolean advanceFire(UUID id, long expectedVersion, Instant newNextFireAt,
                                Instant lastEnqueuedAt) {
-        int updated = jdbc.queryForObject("""
-                        WITH moved AS (
-                            UPDATE job_schedules SET next_fire_at = ?, last_enqueued_at = ?,
-                                version = version + 1
-                            WHERE id = ? AND version = ?
-                            RETURNING id
-                        )
-                        SELECT count(*) FROM moved
-                        """, Integer.class,
-                Timestamp.from(newNextFireAt), Timestamp.from(lastEnqueuedAt), id, expectedVersion);
+        return advanceFire(id, expectedVersion, newNextFireAt, lastEnqueuedAt, null);
+    }
+
+    /** Leadership-fenced variant: stale schedulers cannot advance schedules. */
+    public boolean advanceFire(UUID id, long expectedVersion, Instant newNextFireAt,
+                               Instant lastEnqueuedAt, Long leadershipFencingToken) {
+        StringBuilder sql = new StringBuilder("""
+                WITH moved AS (
+                    UPDATE job_schedules SET next_fire_at = ?, last_enqueued_at = ?,
+                        version = version + 1
+                    WHERE id = ? AND version = ?
+                """);
+        if (leadershipFencingToken != null) {
+            sql.append("""
+                    
+                      AND EXISTS (SELECT 1 FROM scheduler_leases l
+                                  WHERE l.resource_name = 'SCHEDULER_LEADER'
+                                    AND l.fencing_token = ?
+                                    AND l.expires_at > now())
+                    """);
+        }
+        sql.append("""
+                
+                    RETURNING id
+                )
+                SELECT count(*) FROM moved
+                """);
+        var args = new java.util.ArrayList<Object>();
+        args.add(Timestamp.from(newNextFireAt));
+        args.add(Timestamp.from(lastEnqueuedAt));
+        args.add(id);
+        args.add(expectedVersion);
+        if (leadershipFencingToken != null) {
+            args.add(leadershipFencingToken);
+        }
+        Integer updated = jdbc.queryForObject(sql.toString(), Integer.class, args.toArray());
         return updated != 0;
     }
 

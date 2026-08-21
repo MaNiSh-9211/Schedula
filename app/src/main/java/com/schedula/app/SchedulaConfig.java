@@ -26,17 +26,21 @@ public class SchedulaConfig {
     @Bean(destroyMethod = "stop")
     @ConditionalOnProperty(name = "schedula.roles.scheduler", havingValue = "true", matchIfMissing = true)
     public SmartLifecycle schedulerLifecycle(SchedulerLoop loop, RecoveryService recovery,
+                                             com.schedula.coordination.Coordinator coordinator,
                                              Clock clock,
                                              @Value("${schedula.scheduler.poll-interval-ms:250}") long pollMs,
-                                             @Value("${schedula.recovery.sweep-interval-ms:5000}") long sweepMs) {
+                                             @Value("${schedula.recovery.sweep-interval-ms:5000}") long sweepMs,
+                                             @Value("${schedula.coordinator.probe-interval-ms:1000}") long probeMs) {
         return new SmartLifecycle() {
             private LoopRunner runner;
+            private LoopRunner coordinatorRunner;
             private ScheduledExecutorService sweeper;
             private volatile boolean runningFlag;
 
             @Override
             public void start() {
-                recovery.recover();
+                coordinatorRunner = new LoopRunner("coordinator", probeMs, coordinator::step, clock);
+                coordinatorRunner.start();
                 runner = new LoopRunner("scheduler", pollMs, loop::tick, clock);
                 runner.start();
                 sweeper = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -53,6 +57,7 @@ public class SchedulaConfig {
                 runningFlag = false;
                 if (sweeper != null) sweeper.shutdownNow();
                 if (runner != null) runner.stop();
+                if (coordinatorRunner != null) coordinatorRunner.stop();
             }
 
             @Override

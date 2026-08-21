@@ -84,6 +84,9 @@ class ReliabilityIT {
     @Autowired
     RecoveryService recovery;
 
+    @Autowired
+    com.schedula.coordination.Coordinator coordinator;
+
     private Job submit(String body) {
         ResponseEntity<Job> res = http.postForEntity("/v1/jobs", FullFlowIT.jsonBody(body), Job.class);
         assertThat(res.getStatusCode()).isEqualTo(HttpStatus.CREATED);
@@ -134,6 +137,8 @@ class ReliabilityIT {
 
     @Test
     void expiredClaimIsAbandonedAndRedelivered() {
+        // recovery is a leader duty; wait for THIS context's coordinator to win the lease
+        Await.until(coordinator::isLeader, b -> b, 15_000);
         // drive the pipeline manually with roles-independent beans
         Job job = submit("{\"jobType\":\"sleep\",\"payload\":{\"ms\":100}}");
         // wait until claimed by the live worker, then simulate a dead claim by expiring it
