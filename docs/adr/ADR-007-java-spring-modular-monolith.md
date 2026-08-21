@@ -1,6 +1,15 @@
-# ADR-007: Java 21 + Spring Boot modular monolith
+# ADR-007: Java 21 + Spring modular monolith
 
-Status: Accepted (Phase 0)
+Status: Accepted (Phase 0); amended at Phase 1 start (build tool)
+
+## Amendment (Phase 1)
+
+Build tool is **Maven** rather than Gradle: the development environment ships Maven 3.9 and no
+Gradle installation; wrapper bootstrapping would add moving parts without changing any
+architectural property. Module boundaries, role-based process assembly, and extraction rules
+are unchanged. The boundary-enforcement mechanism becomes Maven module scoping + review
+(archunit-style enforcement revisited when the module graph grows).
+
 
 ## Context
 
