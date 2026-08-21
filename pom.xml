@@ -21,6 +21,7 @@
   <modules>
     <module>common</module>
     <module>persistence</module>
+    <module>coordination</module>
     <module>queue</module>
     <module>dispatcher</module>
     <module>engine</module>
@@ -45,6 +46,11 @@
       <dependency>
         <groupId>com.schedula</groupId>
         <artifactId>schedula-persistence</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.schedula</groupId>
+        <artifactId>schedula-coordination</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
