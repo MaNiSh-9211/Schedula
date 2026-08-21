@@ -1,0 +1,40 @@
+# --- build output ---
+target/
+build/
+out/
+*.class
+*.jar
+!**/maven-wrapper.jar
+
+# --- ide ---
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+.factorypath
+
+# --- logs & runtime ---
+logs/
+*.log
+hs_err_pid*
+replay_pid*
+
+# --- local env / secrets ---
+.env
+.env.*
+*.local.properties
+
+# --- os junk ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- misc ---
+*.swp
+*~
+.flattened-pom.xml
+.mvn/timing.properties
