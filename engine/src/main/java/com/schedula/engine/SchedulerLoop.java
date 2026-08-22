@@ -123,7 +123,8 @@ public class SchedulerLoop {
     private UUID createOccurrence(JobSchedule s, Advance advance) {
         Job created = jobs.create(new JobStore.Insert(
                 s.tenantId(), s.jobType(), 0, s.payloadJson(), null, "{}",
-                60_000L, clock.now(), s.id(), s.name() + ":" + advance.newNextFireAt().toEpochMilli()));
+                60_000L, clock.now(), s.id(), s.name() + ":" + advance.newNextFireAt().toEpochMilli(), null, null, null));
         return created.id();
     }
 }
+
