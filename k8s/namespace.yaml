@@ -1,0 +1,18 @@
+# Kubernetes deployment (Phase 8)
+#
+# One image, three roles via SCHEDULA_ROLES_* env flags. Postgres is assumed to be
+# provided (managed service or operator); a dev StatefulSet is included for completeness.
+#
+#   kubectl apply -f k8s/namespace.yaml -f k8s/secrets.yaml -f k8s/postgres.yaml \
+#                -f k8s/api.yaml -f k8s/scheduler.yaml -f k8s/worker.yaml
+#
+# Scaling notes:
+# - workers scale horizontally; HPA uses queue depth via the prometheus-adapter rule
+#   referenced in worker-hpa.yaml (metric: schedula_queue_depth).
+# - schedulers run as 3 replicas; leadership is arbitrated by the PG lease (ADR-005),
+#   so replicas are safe to run at all times.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: schedula

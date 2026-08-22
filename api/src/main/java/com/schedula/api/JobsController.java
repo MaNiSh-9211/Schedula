@@ -68,12 +68,20 @@ public class JobsController {
         this.submittedTotal = Counter.builder("schedula_job_submitted_total").register(meters);
     }
 
-    /** Tenant scope comes from the authenticated key; admins may target any tenant. */
+    /**
+     * Tenant scope resolution order: admin-requested > authenticated key > requested >
+     * default. With auth enabled the filter guarantees a principal, so the final
+     * fallback only applies to anonymous (auth-disabled) deployments.
+     */
     private UUID resolveTenant(HttpServletRequest http, UUID requested) {
         if (RequestTenant.isAdmin(http)) {
             return requested == null ? DEFAULT_TENANT : requested;
         }
-        return RequestTenant.tenant(http).orElse(DEFAULT_TENANT);
+        var fromKey = RequestTenant.tenant(http);
+        if (fromKey.isPresent()) {
+            return fromKey.get();
+        }
+        return requested == null ? DEFAULT_TENANT : requested;
     }
 
     /**
@@ -112,6 +120,13 @@ public class JobsController {
     List<JobExecution> executions(@PathVariable UUID id) {
         jobs.findById(id).orElseThrow(() -> new NotFoundException("job", id));
         return executions.findByJob(id);
+    }
+
+    @GetMapping("/{id}/events")
+    List<com.schedula.common.model.JobEvent> events(@PathVariable UUID id,
+                                                    com.schedula.persistence.EventStore eventStore) {
+        jobs.findById(id).orElseThrow(() -> new NotFoundException("job", id));
+        return eventStore.listByJob(id);
     }
 
     @GetMapping

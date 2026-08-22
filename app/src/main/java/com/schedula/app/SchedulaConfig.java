@@ -28,7 +28,8 @@ public class SchedulaConfig {
     public SmartLifecycle schedulerLifecycle(SchedulerLoop loop, RecoveryService recovery,
                                              com.schedula.engine.RetentionService retention,
                                              com.schedula.coordination.Coordinator coordinator,
-                                             Clock clock,
+                                             Clock clock, org.springframework.jdbc.core.JdbcTemplate jdbc,
+                                             io.micrometer.core.instrument.MeterRegistry meters,
                                              @Value("${schedula.scheduler.poll-interval-ms:250}") long pollMs,
                                              @Value("${schedula.recovery.sweep-interval-ms:5000}") long sweepMs,
                                              @Value("${schedula.coordinator.probe-interval-ms:1000}") long probeMs) {
@@ -52,6 +53,20 @@ public class SchedulaConfig {
                 sweeper.scheduleAtFixedRate(recovery::recover, sweepMs, sweepMs, TimeUnit.MILLISECONDS);
                 sweeper.scheduleAtFixedRate(retention::run,
                         Math.max(sweepMs, 60_000L), Math.max(sweepMs, 60_000L), TimeUnit.MILLISECONDS);
+
+                // queue-depth gauge: the autoscaling signal (never CPU, see §40)
+                var queueDepth = new java.util.concurrent.atomic.AtomicLong(0);
+                meters.gauge("schedula_queue_depth", queueDepth);
+                sweeper.scheduleAtFixedRate(() -> {
+                    try {
+                        Long d = jdbc.queryForObject(
+                                "SELECT count(*) FROM queue_messages WHERE status = 'READY'",
+                                Long.class);
+                        if (d != null) queueDepth.set(d);
+                    } catch (RuntimeException ignored) {
+                        // transient DB unavailability must not kill the sweeper thread
+                    }
+                }, sweepMs, sweepMs, TimeUnit.MILLISECONDS);
                 runningFlag = true;
             }
 

@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: schedula-scheduler
+  namespace: schedula
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: schedula-scheduler }
+  template:
+    metadata:
+      labels: { app: schedula-scheduler }
+    spec:
+      containers:
+        - name: scheduler
+          image: schedula/platform:latest
+          envFrom:
+            - configMapRef: { name: schedula-config }
+            - secretRef: { name: schedula-secrets }
+          env:
+            - name: SCHEDULA_ROLES_API
+              value: "false"
+            - name: SCHEDULA_ROLES_WORKER
+              value: "false"
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8080 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8080 }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "500m", memory: "768Mi" }
+            limits: { memory: "1Gi" }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: schedula-scheduler-pdb
+  namespace: schedula
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: schedula-scheduler }

@@ -363,9 +363,21 @@ public class WorkerLoop {
         }
     }
 
+    /**
+     * Unknown failures default to TRANSIENT when they smell like infrastructure
+     * (data-access / connectivity), because riding out an outage via retries is exactly
+     * what at-least-once delivery is for. Everything else defaults PERMANENT.
+     */
     private String guessClass(Throwable t) {
-        String n = t.getClass().getSimpleName().toLowerCase();
-        if (n.contains("connect") || n.contains("timeout") || n.contains("unavailable")) {
+        String n = t.getClass().getName().toLowerCase();
+        String msg = String.valueOf(t.getMessage()).toLowerCase();
+        if (n.contains("jdbc") || n.contains("dataaccess") || n.contains("transientdata")
+                || msg.contains("connection") || msg.contains("timeout")
+                || msg.contains("unavailable") || msg.contains("broken pipe")) {
+            return ErrorClass.TRANSIENT.name();
+        }
+        String simple = t.getClass().getSimpleName().toLowerCase();
+        if (simple.contains("connect") || simple.contains("timeout") || simple.contains("unavailable")) {
             return ErrorClass.TRANSIENT.name();
         }
         return ErrorClass.PERMANENT.name();

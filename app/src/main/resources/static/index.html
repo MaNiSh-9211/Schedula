@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Schedula Admin</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>⚙ Schedula</h1>
+  <nav>
+    <button data-view="overview" class="active">Overview</button>
+    <button data-view="jobs">Jobs</button>
+    <button data-view="schedules">Schedules</button>
+    <button data-view="dlq">DLQ</button>
+    <button data-view="fleet">Fleet</button>
+  </nav>
+  <div id="keybox">
+    <input id="apikey" type="password" placeholder="X-API-Key (sk_...)" autocomplete="off">
+    <input id="adminkey" type="password" placeholder="X-Admin-Key (optional)" autocomplete="off">
+    <button id="savekeys">Connect</button>
+    <span id="connstate"></span>
+  </div>
+</header>
+
+<main>
+
+<!-- OVERVIEW -->
+<section id="view-overview" class="view active">
+  <div class="cards" id="overview-cards"></div>
+  <h2>Scheduler cluster</h2>
+  <pre id="overview-leader" class="mono">—</pre>
+  <h2>Queues</h2>
+  <table id="overview-queues"><thead><tr><th>queue</th><th>ready</th><th>claimed</th><th>dead</th></tr></thead><tbody></tbody></table>
+</section>
+
+<!-- JOBS -->
+<section id="view-jobs" class="view">
+  <details open>
+    <summary>Submit job</summary>
+    <form id="submit-form" class="grid">
+      <label>type* <input name="jobType" required placeholder="log|sleep|http|..."></label>
+      <label>payload (json) <input name="payloadText" value="{}"></label>
+      <label>priority <input name="priority" type="number" value="0"></label>
+      <label>scheduledFor ISO <input name="scheduledFor" placeholder="optional, e.g. 2026-12-01T09:00:00Z"></label>
+      <label>maxAttempts <input name="maxAttempts" type="number" placeholder="3"></label>
+      <label>timeoutMs <input name="timeoutMs" type="number" placeholder="60000"></label>
+      <label>required caps (csv) <input name="caps" placeholder="python,gpu"></label>
+      <label>requiredCpu <input name="requiredCpu" type="number" placeholder="0"></label>
+      <label>requiredMemMb <input name="requiredMemMb" type="number" placeholder="0"></label>
+      <label>Idempotency-Key <input name="idemKey" placeholder="optional"></label>
+      <label>retryPolicy (json) <input name="retryPolicyText" placeholder='{"backoff":"EXPONENTIAL_JITTERED"}'></label>
+      <button type="submit">Submit</button>
+    </form>
+    <pre id="submit-result" class="mono small"></pre>
+  </details>
+
+  <div class="toolbar">
+    <select id="jobs-status">
+      <option value="">any status</option>
+      <option>SCHEDULED</option><option>QUEUED</option><option>DISPATCHED</option>
+      <option>RUNNING</option><option>RETRY_WAIT</option><option>CANCELLING</option>
+      <option>COMPLETED</option><option>FAILED_TERMINAL</option><option>DEAD</option>
+      <option>CANCELLED</option><option>PAUSED</option>
+    </select>
+    <button onclick="loadJobs()">refresh</button>
+    <span id="jobs-meta" class="muted"></span>
+  </div>
+  <table id="jobs-table">
+    <thead><tr><th>id</th><th>type</th><th>status</th><th>prio</th><th>attempts</th>
+      <th>scheduledFor</th><th>updated</th><th>actions</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <div id="job-detail" class="hidden">
+    <h2>Job <span id="jd-id" class="mono"></span></h2>
+    <pre id="jd-json" class="mono"></pre>
+    <h3>Executions</h3>
+    <table id="jd-exec"><thead><tr><th>#</th><th>status</th><th>worker</th><th>fence</th><th>started</th><th>finished</th><th>error</th></tr></thead><tbody></tbody></table>
+    <h3>Events</h3>
+    <table id="jd-events"><thead><tr><th>time</th><th>event</th><th>actor</th><th>reason</th></tr></thead><tbody></tbody></table>
+  </div>
+</section>
+
+<!-- SCHEDULES -->
+<section id="view-schedules" class="view">
+  <details open><summary>Create schedule</summary>
+    <form id="sched-form" class="grid">
+      <label>name* <input name="name" required></label>
+      <label>jobType* <input name="jobType" required value="log"></label>
+      <label>payload (json) <input name="payloadText" value="{}"></label>
+      <label>mode
+        <select name="mode"><option value="cron">cron</option><option value="interval">fixed interval ms</option></select>
+      </label>
+      <label>cron expr <input name="cronExpr" placeholder="0 0 9 * * *"></label>
+      <label>timezone <input name="timezone" placeholder="Europe/Berlin"></label>
+      <label>intervalMs <input name="intervalMs" type="number" placeholder="60000"></label>
+      <label>missed policy
+        <select name="missedPolicy"><option>COALESCE</option><option>SKIP_TO_LATEST</option></select>
+      </label>
+      <button type="submit">Create</button>
+    </form>
+    <pre id="sched-result" class="mono small"></pre>
+  </details>
+  <button onclick="loadSchedules()">refresh</button>
+  <table id="sched-table">
+    <thead><tr><th>name</th><th>kind</th><th>expr/interval</th><th>tz</th><th>next fire (UTC)</th><th>policy</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<!-- DLQ -->
+<section id="view-dlq" class="view">
+  <button onclick="loadDlq()">refresh</button>
+  <table id="dlq-table">
+    <thead><tr><th>message</th><th>job</th><th>type</th><th>deliveries</th><th>error</th><th>resolved</th><th>actions</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<!-- FLEET -->
+<section id="view-fleet" class="view">
+  <button onclick="loadFleet()">refresh</button>
+  <h2>Workers</h2>
+  <table id="workers-table">
+    <thead><tr><th>name</th><th>status</th><th>version</th><th>capabilities</th><th>running/max</th><th>last heartbeat</th></tr></thead>
+    <tbody></tbody></table>
+  <h2>Schedulers</h2>
+  <pre id="schedulers-pre" class="mono"></pre>
+</section>
+
+</main>
+<div id="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>

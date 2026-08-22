@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: schedula-api
+  namespace: schedula
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: schedula-api }
+  template:
+    metadata:
+      labels: { app: schedula-api }
+    spec:
+      containers:
+        - name: api
+          image: schedula/platform:latest
+          ports: [{ containerPort: 8080 }]
+          envFrom:
+            - configMapRef: { name: schedula-config }
+            - secretRef: { name: schedula-secrets }
+          env:
+            - name: SCHEDULA_ROLES_SCHEDULER
+              value: "false"
+            - name: SCHEDULA_ROLES_WORKER
+              value: "false"
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8080 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8080 }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "500m", memory: "768Mi" }
+            limits: { memory: "1Gi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: schedula-api
+  namespace: schedula
+spec:
+  selector: { app: schedula-api }
+  ports: [{ port: 80, targetPort: 8080 }]

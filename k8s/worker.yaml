@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: schedula-worker
+  namespace: schedula
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: schedula-worker }
+  template:
+    metadata:
+      labels: { app: schedula-worker }
+    spec:
+      terminationGracePeriodSeconds: 45   # must exceed worker.drain-deadline-ms
+      containers:
+        - name: worker
+          image: schedula/platform:latest
+          envFrom:
+            - configMapRef: { name: schedula-config }
+            - secretRef: { name: schedula-secrets }
+          env:
+            - name: SCHEDULA_ROLES_API
+              value: "false"
+            - name: SCHEDULA_ROLES_SCHEDULER
+              value: "false"
+            - name: SCHEDULA_WORKER_CONCURRENCY
+              value: "8"
+            - name: SCHEDULA_WORKER_CAPABILITIES
+              value: "python,http"
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8080 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8080 }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "500m", memory: "768Mi" }
+            limits: { memory: "1Gi" }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: schedula-worker-pdb
+  namespace: schedula
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: { app: schedula-worker }
