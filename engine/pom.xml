@@ -31,6 +31,10 @@
       <artifactId>schedula-coordination</artifactId>
     </dependency>
     <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+    </dependency>
+    <dependency>
       <groupId>io.micrometer</groupId>
       <artifactId>micrometer-core</artifactId>
     </dependency>
@@ -50,3 +54,4 @@
     </dependency>
   </dependencies>
 </project>
+

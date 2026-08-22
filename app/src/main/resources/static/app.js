@@ -42,8 +42,8 @@ document.querySelectorAll("nav button").forEach(b =>
     document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
     b.classList.add("active");
     $("#" + "view-" + b.dataset.view).classList.add("active");
-    ({ overview: loadOverview, jobs: loadJobs, schedules: loadSchedules,
-       dlq: loadDlq, fleet: loadFleet }[b.dataset.view] || (() => {}))();
+    ({ overview: loadOverview, jobs: loadJobs, workflows: loadWorkflows,
+       schedules: loadSchedules, dlq: loadDlq, fleet: loadFleet }[b.dataset.view] || (() => {}))();
   });
 
 /* ---------- key handling ---------- */
@@ -198,6 +198,62 @@ $("#submit-form").onsubmit = async (ev) => {
     const json = await res.json();
     $("#submit-result").textContent = JSON.stringify(json, null, 2);
     toast(res.ok ? "submitted " + json.id : "submit failed (" + res.status + ")", !res.ok);
+  } catch (e) { toast(e.message, true); }
+};
+
+/* ---------- workflows ---------- */
+async function loadWorkflows() {
+  try {
+    const execs = await call("/v1/workflows/executions?limit=25");
+    $("#wf-table tbody").innerHTML = execs.map(e => `
+      <tr>
+        <td class="mono">${String(e.id).slice(0,8)}…</td>
+        <td>${badge(e.status)}</td>
+        <td>${e.compensated ? "yes" : "no"}</td>
+        <td class="mono small">${fmt(e.createdAt)}</td>
+        <td class="actions"><button onclick="showWf('${e.id}')">tasks</button></td>
+      </tr>`).join("") || "<tr><td colspan=5 class=muted>no executions yet</td></tr>";
+  } catch (e) { toast(e.message, true); }
+}
+
+window.showWf = async (id) => {
+  try {
+    const s = await call("/v1/workflows/executions/" + id);
+    $("#wf-detail").classList.remove("hidden");
+    $("#wft-table tbody").innerHTML = (s.tasks || []).map(t => `
+      <tr><td>${esc(t.key)}</td><td>${esc(t.kind)}</td><td>${badge(t.status)}</td>
+      <td>${t.attemptNo}</td>
+      <td class="mono small">${t.jobId ? String(t.jobId).slice(0,8)+"…" : "—"}</td>
+      <td class="small">${esc(t.error || "")}</td></tr>`).join("");
+  } catch (e) { toast(e.message, true); }
+};
+
+$("#wf-register").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const f = new FormData(ev.target);
+  let def;
+  try { def = JSON.parse(f.get("defText")); }
+  catch { return toast("definition is not valid JSON", true); }
+  try {
+    const res = await call("/v1/workflows", {
+      method: "POST", body: JSON.stringify({ name: f.get("name"), definition: def })
+    });
+    $("#wf-reg-result").textContent = JSON.stringify(res, null, 2);
+    toast("registered version " + res.version);
+  } catch (e) { toast(e.message, true); }
+};
+
+$("#wf-start").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const f = new FormData(ev.target);
+  let input;
+  try { input = JSON.parse(f.get("inputText") || "{}"); }
+  catch { return toast("input is not valid JSON", true); }
+  try {
+    const res = await call(`/v1/workflows/${encodeURIComponent(f.get("name"))}/executions`,
+      { method: "POST", body: JSON.stringify({ input }) });
+    toast("started " + res.workflowExecutionId);
+    loadWorkflows();
   } catch (e) { toast(e.message, true); }
 };
 

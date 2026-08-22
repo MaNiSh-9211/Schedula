@@ -16,6 +16,10 @@
   <dependencies>
     <dependency>
       <groupId>com.schedula</groupId>
+      <artifactId>schedula-engine</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.schedula</groupId>
       <artifactId>schedula-common</artifactId>
     </dependency>
     <dependency>
@@ -45,3 +49,4 @@
     </dependency>
   </dependencies>
 </project>
+

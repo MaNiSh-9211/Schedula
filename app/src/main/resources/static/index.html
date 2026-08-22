@@ -12,6 +12,7 @@
   <nav>
     <button data-view="overview" class="active">Overview</button>
     <button data-view="jobs">Jobs</button>
+    <button data-view="workflows">Workflows</button>
     <button data-view="schedules">Schedules</button>
     <button data-view="dlq">DLQ</button>
     <button data-view="fleet">Fleet</button>
@@ -80,6 +81,35 @@
     <table id="jd-exec"><thead><tr><th>#</th><th>status</th><th>worker</th><th>fence</th><th>started</th><th>finished</th><th>error</th></tr></thead><tbody></tbody></table>
     <h3>Events</h3>
     <table id="jd-events"><thead><tr><th>time</th><th>event</th><th>actor</th><th>reason</th></tr></thead><tbody></tbody></table>
+  </div>
+</section>
+
+<!-- WORKFLOWS -->
+<section id="view-workflows" class="view">
+  <details open><summary>Register workflow definition</summary>
+    <form id="wf-register" class="grid">
+      <label>name* <input name="name" required placeholder="order-flow"></label>
+      <label>definition (json)* <input name="defText" class="wide"
+        placeholder='{"tasks":[{"key":"a","jobType":"log","payload":{}},{"key":"b","jobType":"log","dependsOn":["a"]}]}'></label>
+      <button type="submit">Register</button>
+    </form>
+    <pre id="wf-reg-result" class="mono small"></pre>
+  </details>
+  <details open><summary>Start execution</summary>
+    <form id="wf-start" class="grid">
+      <label>workflow name* <input name="name" required></label>
+      <label>input (json) <input name="inputText" value="{}"></label>
+      <button type="submit">Start</button>
+    </form>
+  </details>
+  <div class="toolbar"><button onclick="loadWorkflows()">refresh</button>
+    <span class="muted">click a row for task states</span></div>
+  <table id="wf-table">
+    <thead><tr><th>execution</th><th>status</th><th>compensated</th><th>created</th><th></th></tr></thead>
+    <tbody></tbody></table>
+  <div id="wf-detail" class="hidden">
+    <h3>Tasks</h3>
+    <table id="wft-table"><thead><tr><th>key</th><th>kind</th><th>status</th><th>attempt</th><th>job</th><th>error</th></tr></thead><tbody></tbody></table>
   </div>
 </section>
 

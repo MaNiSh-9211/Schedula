@@ -2,6 +2,8 @@ package com.schedula.app;
 
 import com.schedula.common.time.Clock;
 import com.schedula.engine.LoopRunner;
+import com.schedula.persistence.EventStore;
+import com.schedula.persistence.JobStore;
 import com.schedula.engine.RecoveryService;
 import com.schedula.engine.SchedulerLoop;
 import com.schedula.worker.WorkerLoop;
@@ -28,6 +30,8 @@ public class SchedulaConfig {
     public SmartLifecycle schedulerLifecycle(SchedulerLoop loop, RecoveryService recovery,
                                              com.schedula.engine.RetentionService retention,
                                              com.schedula.coordination.Coordinator coordinator,
+                                             com.schedula.persistence.WorkflowStore workflowStore,
+                                             JobStore jobStore, EventStore eventStore,
                                              Clock clock, org.springframework.jdbc.core.JdbcTemplate jdbc,
                                              io.micrometer.core.instrument.MeterRegistry meters,
                                              @Value("${schedula.scheduler.poll-interval-ms:250}") long pollMs,
@@ -36,6 +40,7 @@ public class SchedulaConfig {
         return new SmartLifecycle() {
             private LoopRunner runner;
             private LoopRunner coordinatorRunner;
+            private LoopRunner wfRunner;
             private ScheduledExecutorService sweeper;
             private volatile boolean runningFlag;
 
@@ -53,6 +58,12 @@ public class SchedulaConfig {
                 sweeper.scheduleAtFixedRate(recovery::recover, sweepMs, sweepMs, TimeUnit.MILLISECONDS);
                 sweeper.scheduleAtFixedRate(retention::run,
                         Math.max(sweepMs, 60_000L), Math.max(sweepMs, 60_000L), TimeUnit.MILLISECONDS);
+
+                // workflow DAG driver: leader-gated internally; recovers purely from rows
+                var wfDriver = new com.schedula.engine.workflow.WorkflowDriver(
+                        workflowStore, jobStore, eventStore, coordinator, clock, meters);
+                wfRunner = new LoopRunner("workflow-driver", pollMs, wfDriver::tick, clock);
+                wfRunner.start();
 
                 // queue-depth gauge: the autoscaling signal (never CPU, see §40)
                 var queueDepth = new java.util.concurrent.atomic.AtomicLong(0);
@@ -76,6 +87,7 @@ public class SchedulaConfig {
                 if (sweeper != null) sweeper.shutdownNow();
                 if (runner != null) runner.stop();
                 if (coordinatorRunner != null) coordinatorRunner.stop();
+                if (wfRunner != null) wfRunner.stop();
             }
 
             @Override
