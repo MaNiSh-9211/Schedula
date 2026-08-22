@@ -59,6 +59,9 @@ safe via idempotency keys. See [EXECUTION-GUARANTEES.md](docs/EXECUTION-GUARANTE
 | [ROADMAP.md](docs/ROADMAP.md) | Phase 0–9 implementation roadmap with exit criteria |
 | [TESTING.md](docs/TESTING.md) | Test strategy, fault injection, chaos scenarios, load testing |
 | [OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md) | Unresolved architectural questions |
+| [BENCHMARKS.md](docs/BENCHMARKS.md) | Benchmark methodology, dev-laptop observations, known ceilings |
+| [rls-template.sql](docs/rls-template.sql) | Optional Postgres RLS defense-in-depth template (off by default) |
+| [OPERATIONS.md](docs/OPERATIONS.md) | Operator quick reference: run, CLI, signals, failure handling |
 
 ### Architecture Decision Records (`docs/adr/`)
 

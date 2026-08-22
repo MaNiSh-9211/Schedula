@@ -1,0 +1,45 @@
+# Prometheus alert rules for Schedula — wire into your Alertmanager config.
+groups:
+  - name: schedula
+    rules:
+      - alert: SchedulerLagHigh
+        expr: histogram_quantile(0.99, sum(rate(schedula_scheduler_lag_bucket[5m])) by (le)) > 5
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Scheduler P99 lag above 5s for 5m"
+
+      - alert: QueueBacklogGrowing
+        expr: max(schedula_queue_depth) > 10000
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "Queue depth over 10k for 15m — add workers or check caps"
+
+      - alert: FencedWriteRejected
+        expr: sum(increase(schedula_fenced_write_rejected_total[10m])) > 0
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "Stale owner attempted a write — expected only during failovers"
+
+      - alert: LeaderFlapping
+        expr: sum(increase(schedula_leader_changes_total[15m])) > 3
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "More than 3 leadership changes in 15m"
+
+      - alert: DeadLetterSpike
+        expr: sum(increase(schedula_queue_deadlettered_total[15m])) > 20
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: "Dead-letter spike in the last 15m"
+
+      - alert: WorkerFleetShrunk
+        expr: count(schedula_is_leader == 0) + count(schedula_is_leader == 1) < 2
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Fewer scheduler instances reporting than expected"

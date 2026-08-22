@@ -42,6 +42,7 @@ class RetentionIT {
     @Autowired TestRestTemplate http;
     @Autowired JdbcTemplate jdbc;
     @Autowired RetentionService retention;
+    @Autowired com.schedula.coordination.Coordinator coordinator;
 
     private Job submit(String body) {
         ResponseEntity<Job> res = http.postForEntity("/v1/jobs", FullFlowIT.jsonBody(body), Job.class);
@@ -55,6 +56,8 @@ class RetentionIT {
 
     @Test
     void terminalHistoryIsPurgedFreshJobsKept() {
+        // retention is a leader duty; wait for THIS context's coordinator to win the lease
+        Await.until(coordinator::isLeader, b -> b, 15_000);
         Job doomed = submit("{\"jobType\":\"log\",\"payload\":{}}");
         Await.until(() -> getJob(doomed.id()), j -> j.status() == JobStatus.COMPLETED, 15_000);
 

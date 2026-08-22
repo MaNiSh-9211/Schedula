@@ -1,0 +1,14 @@
+-- OPTIONAL defense-in-depth: Postgres Row-Level Security (MULTI-TENANCY.md §1).
+-- NOT enabled by default: the app enforces tenant scoping at every query path.
+-- To activate, run the statements below AND make the app set `app.tenant_id` per
+-- transaction (requires pooler support for SET LOCAL — see OPERATIONS.md).
+--
+-- Example policy set (jobs shown; repeat per business table):
+--
+-- ALTER TABLE jobs ENABLE ROW LEVEL SECURITY;
+-- CREATE POLICY tenant_isolation ON jobs
+--   USING (current_setting('app.tenant_id', true) IS NULL
+--          OR tenant_id = current_setting('app.tenant_id')::uuid);
+--
+-- The NULL-setting branch exists so platform-internal loops (scheduler/sweeper,
+-- which legitimately cross tenants) keep working until per-request scoping lands.

@@ -41,6 +41,11 @@ public class QuotaStore {
 
     /** @throws TenantOverQuota when the caller should receive 429. */
     public void admissionCheck(UUID tenantId) {
+        checkBacklogQuota(tenantId);
+        checkRateLimit(tenantId);
+    }
+
+    private void checkBacklogQuota(UUID tenantId) {
         List<Long> limits = jdbc.queryForList(
                 "SELECT max_pending_jobs FROM tenant_quotas WHERE tenant_id = ?",
                 Long.class, tenantId);
@@ -57,6 +62,28 @@ public class QuotaStore {
         if (pending >= limit) {
             throttled.increment();
             throw new TenantOverQuota(tenantId, pending, limit);
+        }
+    }
+
+    /**
+     * Submission-rate limit (§28): sliding 60s window over created_at. Single-node
+     * accurate via the DB clock; multi-node exactness is bounded by poll timing —
+     * acceptable for load-shaping (documented in MULTI-TENANCY.md).
+     */
+    private void checkRateLimit(UUID tenantId) {
+        List<Long> limits = jdbc.queryForList(
+                "SELECT max_submit_per_min FROM tenant_quotas WHERE tenant_id = ?",
+                Long.class, tenantId);
+        if (limits.isEmpty()) return;
+        long perMinute = limits.get(0);
+        if (perMinute >= Long.MAX_VALUE / 2) return;
+        List<Long> recent = jdbc.queryForList("""
+                SELECT count(*) FROM jobs
+                WHERE tenant_id = ? AND created_at > now() - interval '60 seconds'
+                """, Long.class, tenantId);
+        if (!recent.isEmpty() && recent.get(0) >= perMinute) {
+            throttled.increment();
+            throw new TenantOverQuota(tenantId, recent.get(0), perMinute);
         }
     }
 

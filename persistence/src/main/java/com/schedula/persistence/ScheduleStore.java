@@ -44,7 +44,15 @@ public class ScheduleStore {
                          String missedPolicy) {
     }
 
+    /**
+     * Idempotent by (tenant, name): re-creating an existing schedule returns the existing
+     * row untouched — never a second firing engine for the same logical schedule.
+     */
     public JobSchedule create(Insert draft) {
+        var existing = findByName(draft.tenantId(), draft.name());
+        if (existing.isPresent()) {
+            return existing.get();
+        }
         UUID id = com.schedula.common.ids.UuidV7.generate();
         JobSchedule.Kind kind = draft.cronExpr() != null && !draft.cronExpr().isBlank()
                 ? JobSchedule.Kind.CRON : JobSchedule.Kind.FIXED_INTERVAL;
@@ -71,6 +79,11 @@ public class ScheduleStore {
 
     public Optional<JobSchedule> findById(UUID id) {
         return jdbc.query("SELECT * FROM job_schedules WHERE id = ?", SCHEDULE, id).stream().findFirst();
+    }
+
+    public Optional<JobSchedule> findByName(UUID tenantId, String name) {
+        return jdbc.query("SELECT * FROM job_schedules WHERE tenant_id = ? AND name = ?",
+                SCHEDULE, tenantId, name).stream().findFirst();
     }
 
     public List<JobSchedule> findDue(Instant now, int limit) {

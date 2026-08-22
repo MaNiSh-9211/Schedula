@@ -211,7 +211,11 @@ async function loadWorkflows() {
         <td>${badge(e.status)}</td>
         <td>${e.compensated ? "yes" : "no"}</td>
         <td class="mono small">${fmt(e.createdAt)}</td>
-        <td class="actions"><button onclick="showWf('${e.id}')">tasks</button></td>
+        <td class="actions">
+          <button onclick="showWf('${e.id}')">tasks</button>
+          ${["RUNNING","FAILING","COMPENSATING"].includes(e.status)
+            ? `<button class="danger" onclick="cancelWf('${e.id}')">cancel</button>` : ""}
+        </td>
       </tr>`).join("") || "<tr><td colspan=5 class=muted>no executions yet</td></tr>";
   } catch (e) { toast(e.message, true); }
 }
@@ -223,8 +227,16 @@ window.showWf = async (id) => {
     $("#wft-table tbody").innerHTML = (s.tasks || []).map(t => `
       <tr><td>${esc(t.key)}</td><td>${esc(t.kind)}</td><td>${badge(t.status)}</td>
       <td>${t.attemptNo}</td>
-      <td class="mono small">${t.jobId ? String(t.jobId).slice(0,8)+"…" : "—"}</td>
+      <td class="mono small">${t.jobId ? `<a href="#" onclick="showJob('${t.jobId}');return false;">${String(t.jobId).slice(0,8)}…</a>` : "—"}</td>
       <td class="small">${esc(t.error || "")}</td></tr>`).join("");
+  } catch (e) { toast(e.message, true); }
+};
+window.cancelWf = async (id) => {
+  if (!confirm("cancel this workflow execution?")) return;
+  try {
+    await call("/v1/workflows/executions/" + id + "/cancel", { method: "POST" });
+    toast("workflow cancelled");
+    loadWorkflows();
   } catch (e) { toast(e.message, true); }
 };
 
