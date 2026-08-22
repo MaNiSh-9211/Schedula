@@ -50,7 +50,8 @@ public class WorkerLoop {
     public record Props(UUID workerId, String name, int concurrency, int batchSize,
                         long pollIntervalMs, long visibilityTimeoutMs,
                         long heartbeatIntervalMs, long drainDeadlineMs,
-                        java.util.List<String> capabilities, int cpuCapacity, long memCapacityMb) {
+                        java.util.List<String> capabilities, int cpuCapacity, long memCapacityMb,
+                        java.util.List<String> subscribedQueues) {
     }
 
     private final DispatchService dispatcher;
@@ -90,7 +91,8 @@ public class WorkerLoop {
                       @Value("${schedula.worker.drain-deadline-ms:30000}") long drainDeadlineMs,
                       @Value("${schedula.worker.capabilities:}") String capabilitiesCsv,
                       @Value("${schedula.worker.cpu-capacity:0}") int cpuCapacity,
-                      @Value("${schedula.worker.mem-capacity-mb:0}") long memCapacityMb) {
+                      @Value("${schedula.worker.mem-capacity-mb:0}") long memCapacityMb,
+                      @Value("${schedula.worker.queues:default}") String queuesCsv) {
         this.dispatcher = dispatcher;
         this.executions = executions;
         this.jobs = jobs;
@@ -103,9 +105,14 @@ public class WorkerLoop {
                 ? java.util.List.<String>of()
                 : java.util.Arrays.stream(capabilitiesCsv.split(","))
                         .map(String::trim).filter(s -> !s.isEmpty()).toList();
+        var subscribedQueues = queuesCsv == null || queuesCsv.isBlank()
+                ? java.util.List.of("default")
+                : java.util.Arrays.stream(queuesCsv.split(","))
+                        .map(String::trim).filter(s -> !s.isEmpty()).toList();
         this.props = new Props(UUID.randomUUID(), "worker-" + UUID.randomUUID().toString().substring(0, 8),
                 concurrency, batchSize, pollIntervalMs, visibilityTimeoutMs,
-                heartbeatIntervalMs, drainDeadlineMs, capabilities, cpuCapacity, memCapacityMb);
+                heartbeatIntervalMs, drainDeadlineMs, capabilities, cpuCapacity, memCapacityMb,
+                subscribedQueues);
         this.startedTotal = Counter.builder("schedula_job_started_total").register(meters);
         this.completedTotal = Counter.builder("schedula_job_completed_total").register(meters);
         this.failedTotal = Counter.builder("schedula_job_failed_total").register(meters);
@@ -122,7 +129,8 @@ public class WorkerLoop {
         if (running) return;
         running = true;
         workers.register(props.workerId(), props.name(), "phase4", props.concurrency(),
-                props.capabilities(), props.cpuCapacity(), props.memCapacityMb());
+                props.capabilities(), props.cpuCapacity(), props.memCapacityMb(),
+                props.subscribedQueues());
         heartbeatPump = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "worker-heartbeat");
             t.setDaemon(true);
@@ -208,14 +216,27 @@ public class WorkerLoop {
         int cpuFloor = Math.max(0, Math.min(free.cpu(), props.cpuCapacity()));
         long memFloor = Math.max(0, Math.min(free.memMb(), props.memCapacityMb()));
         return new PostgresQueue.ClaimFilter(
-                quotas.typesWithLimits(), quotas.tenantsWithQuotas(), cpuFloor, memFloor);
+                props.subscribedQueues(), quotas.typesWithLimits(), quotas.tenantsWithQuotas(),
+                cpuFloor, memFloor);
     }
 
+
+    private record Outcome(Kind kind, String errorClass, String message, String resultJson) {
+        enum Kind {SUCCESS, TIMEOUT, ERROR, CANCELLED}
+    }
+
+    /**
+     * Runs the handler while (a) enforcing the job timeout, (b) renewing the execution
+     * lease at lease/3 intervals, and (c) polling the job row on each renewal so
+     * CANCELLING requests reach the handler via its CancellationToken.
+     */
     private void runOne(Claimed claimed) {
         var msg = claimed.message();
         var exec = claimed.execution();
         CountDownLatch latch = new CountDownLatch(1);
         inflight.put(exec.id(), latch);
+        org.slf4j.MDC.put("job", msg.jobId().toString());
+        org.slf4j.MDC.put("exec", exec.id().toString());
         try {
             if (!executions.start(exec.id(), props.workerId(), claimed.fencingToken())) {
                 log.warn("execution start rejected for {} (stale lease?); cancelling claim",
@@ -257,7 +278,7 @@ public class WorkerLoop {
             log.debug("job {} handler returned {}", msg.jobId(), outcome.kind());
             executionDuration.record(clock.monotonicNanos() - startNanos, TimeUnit.NANOSECONDS);
             switch (outcome.kind()) {
-                case SUCCESS -> finishSuccess(claimed, job);
+                case SUCCESS -> finishSuccess(claimed, job, outcome.resultJson());
                 case CANCELLED -> finishCancelled(claimed, job);
                 case TIMEOUT -> handleFailure(claimed, job, "TIMEOUT", "execution timed out after "
                         + job.timeoutMs() + "ms", ErrorClass.TRANSIENT);
@@ -270,24 +291,18 @@ public class WorkerLoop {
         } finally {
             inflight.remove(exec.id());
             latch.countDown();
+            org.slf4j.MDC.remove("job");
+            org.slf4j.MDC.remove("exec");
         }
     }
 
-    private record Outcome(Kind kind, String errorClass, String message) {
-        enum Kind {SUCCESS, TIMEOUT, ERROR, CANCELLED}
-    }
-
-    /**
-     * Runs the handler while (a) enforcing the job timeout, (b) renewing the execution
-     * lease at lease/3 intervals, and (c) polling the job row on each renewal so
-     * CANCELLING requests reach the handler via its CancellationToken.
-     */
     private Outcome executeWithTimeout(JobHandler handler, Job job, Claimed claimed,
                                        CancellationToken token) {
+        final String[] resultValue = new String[1];
         Future<?> future = handlerPool.submit(() -> {
             log.debug("handler thread starting for job {}", job.id());
             try {
-                handler.handle(context(job, claimed, token));
+                resultValue[0] = handler.handle(context(job, claimed, token));
                 log.debug("handler thread finished for job {}", job.id());
             } catch (Exception e) {
                 throw new Wrapped(e);
@@ -301,7 +316,7 @@ public class WorkerLoop {
                 long now = clock.monotonicNanos();
                 if (now >= deadline) {
                     future.cancel(true);
-                    return new Outcome(Outcome.Kind.TIMEOUT, "TIMEOUT", "timeout");
+                    return new Outcome(Outcome.Kind.TIMEOUT, "TIMEOUT", "timeout", null);
                 }
                 try {
                     future.get(Math.min(200, TimeUnit.NANOSECONDS.toMillis(deadline - now)),
@@ -338,23 +353,23 @@ public class WorkerLoop {
                     } catch (TimeoutException e) {
                         future.cancel(true);
                     }
-                    return new Outcome(Outcome.Kind.CANCELLED, null, null);
+                    return new Outcome(Outcome.Kind.CANCELLED, null, null, null);
                 }
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             future.cancel(true);
-            return new Outcome(Outcome.Kind.CANCELLED, null, null);
+            return new Outcome(Outcome.Kind.CANCELLED, null, null, null);
         } catch (java.util.concurrent.ExecutionException e) {
             Throwable cause = e.getCause() instanceof Wrapped w ? w.getCause() : e;
             String cls = cause instanceof ClassifiedException ce ? ce.errorClass().name()
                     : guessClass(cause);
-            return new Outcome(Outcome.Kind.ERROR, cls, String.valueOf(cause));
+            return new Outcome(Outcome.Kind.ERROR, cls, String.valueOf(cause), null);
         }
         if (token.isCancelled()) {
-            return new Outcome(Outcome.Kind.CANCELLED, null, null);
+            return new Outcome(Outcome.Kind.CANCELLED, null, null, null);
         }
-        return new Outcome(Outcome.Kind.SUCCESS, null, null);
+        return new Outcome(Outcome.Kind.SUCCESS, null, null, resultValue[0]);
     }
 
     private static final class Wrapped extends RuntimeException {
@@ -409,11 +424,17 @@ public class WorkerLoop {
         }
     }
 
-    private void finishSuccess(Claimed claimed, Job job) {
+    private void finishSuccess(Claimed claimed, Job job, String resultJson) {
         executions.finish(claimed.execution().id(), ExecStatus.COMPLETED, null, null,
                 claimed.fencingToken());
-        boolean moved = jobs.transition(job.id(), Set.of(JobStatus.RUNNING), JobStatus.COMPLETED,
-                "worker:" + props.workerId(), "attempt " + claimed.message().deliverCount() + " succeeded");
+        if (resultJson != null) {
+            executions.saveResult(claimed.execution().id(), resultJson);
+        }
+        // authority comes from the execution's fencing token, not just job status
+        boolean moved = jobs.transitionAfterExecution(job.id(), Set.of(JobStatus.RUNNING),
+                JobStatus.COMPLETED, claimed.execution().id(), claimed.fencingToken(),
+                "worker:" + props.workerId(),
+                "attempt " + claimed.message().deliverCount() + " succeeded");
         if (moved) {
             queue.ack(claimed.message().id(), props.workerId());
             completedTotal.increment();
@@ -471,3 +492,5 @@ public class WorkerLoop {
         return props.workerId();
     }
 }
+
+

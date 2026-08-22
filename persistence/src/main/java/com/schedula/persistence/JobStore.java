@@ -32,11 +32,12 @@ public class JobStore {
                          Integer maxAttempts, String retryPolicyJson, Long timeoutMs,
                          Instant scheduledFor, UUID scheduleId, String idempotencyKey,
                          java.util.List<String> requiredCapabilities, Integer requiredCpu,
-                         Long requiredMemMb) {
+                         Long requiredMemMb, String queueName, String webhookUrl) {
         public Insert {
             if (requiredCapabilities == null) requiredCapabilities = java.util.List.of();
             if (requiredCpu == null) requiredCpu = 0;
             if (requiredMemMb == null) requiredMemMb = 0L;
+            if (queueName == null || queueName.isBlank()) queueName = "default";
         }
     }
 
@@ -56,15 +57,17 @@ public class JobStore {
             jdbc.update("""
                             INSERT INTO jobs (id, tenant_id, job_type, priority, status, payload_json,
                                 max_attempts, retry_policy_json, timeout_ms, scheduled_for, schedule_id,
-                                idempotency_key, required_capabilities, required_cpu, required_mem_mb)
-                            VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?)
+                                idempotency_key, required_capabilities, required_cpu, required_mem_mb,
+                                queue_name, webhook_url)
+                            VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                     id, draft.tenantId(), draft.jobType(), draft.priority(), initial.name(),
                     Mappers.canonicalize(draft.payloadJson()), maxAttempts,
                     Mappers.canonicalize(draft.retryPolicyJson()), timeoutMs,
                     ts(scheduledFor), draft.scheduleId(), draft.idempotencyKey(),
                     draft.requiredCapabilities().toArray(new String[0]),
-                    draft.requiredCpu(), draft.requiredMemMb());
+                    draft.requiredCpu(), draft.requiredMemMb(),
+                    draft.queueName(), draft.webhookUrl());
             events.append(id, null, EventTypes.JOB_CREATED, "api",
                     "submission", null);
             return new CreationResult(findById(id).orElseThrow(), true);
@@ -159,6 +162,39 @@ public class JobStore {
         return ok;
     }
 
+    /**
+     * Terminal transition whose authority comes from the paired EXECUTION's fencing
+     * token rather than convention: the update only lands if the current token holder
+     * recorded that execution terminal in the same statement window.
+     */
+    public boolean transitionAfterExecution(UUID jobId, Set<JobStatus> expected,
+                                            JobStatus target, UUID execId, long fencingToken,
+                                            String actor, String reason) {
+        List<String> expectedNames = expected.stream().map(Enum::name).toList();
+        String placeholders = String.join(",", expectedNames.stream().map(s -> "?").toList());
+        List<Object> args = new ArrayList<>();
+        args.add(target.name());
+        args.add(jobId);
+        args.addAll(expectedNames);
+        args.add(execId);
+        args.add(fencingToken);
+        int updated = jdbc.queryForObject("""
+                WITH moved AS (
+                    UPDATE jobs SET status = ?, version = version + 1, updated_at = now()
+                    WHERE id = ? AND status IN (%s)
+                      AND EXISTS (SELECT 1 FROM job_executions e
+                                  WHERE e.id = ? AND e.fencing_token = ?
+                                    AND e.status IN ('COMPLETED','FAILED','CANCELLED'))
+                    RETURNING id)
+                SELECT count(*) FROM moved
+                """.formatted(placeholders), Integer.class, args.toArray());
+        boolean ok = updated != 0;
+        if (ok) {
+            events.append(jobId, null, eventTypeFor(target), actor, reason, null);
+        }
+        return ok;
+    }
+
     private static String eventTypeFor(JobStatus target) {
         return switch (target) {
             case QUEUED -> EventTypes.JOB_QUEUED;
@@ -206,6 +242,24 @@ public class JobStore {
         sql.append(" ORDER BY created_at DESC LIMIT ? OFFSET ?");
         args.add(limit);
         args.add(offset);
+        return jdbc.query(sql.toString(), JOB, args.toArray());
+    }
+
+    /** Keyset pagination: stable under inserts, unlike offset paging. */
+    public List<Job> listBefore(UUID tenantId, String statusOrNull, Instant before,
+                                int limit) {
+        StringBuilder sql = new StringBuilder("""
+                SELECT * FROM jobs WHERE tenant_id = ? AND created_at < ?
+                """);
+        List<Object> args = new ArrayList<>();
+        args.add(tenantId);
+        args.add(Timestamp.from(before));
+        if (statusOrNull != null && !statusOrNull.isBlank()) {
+            sql.append(" AND status = ?");
+            args.add(statusOrNull);
+        }
+        sql.append(" ORDER BY created_at DESC LIMIT ?");
+        args.add(limit);
         return jdbc.query(sql.toString(), JOB, args.toArray());
     }
 

@@ -28,20 +28,34 @@ public final class CronSupport {
 
         ZonedDateTime fire = schedule.nextFireAt().atZone(zone);
         int missed = 0;
+        var windows = new java.util.ArrayList<Instant>();
+        boolean runAll = schedule.missedPolicy() == JobSchedule.MissedPolicy.RUN_ALL;
         while (!fire.toInstant().isAfter(now)) {
             missed++;
+            if (runAll && missed <= NextFireCalculator.MISSED_COUNT_CAP) {
+                windows.add(fire.toInstant());
+            }
             ZonedDateTime next = expr.next(fire);
             if (next == null) {
-                return new NextFireCalculator.Advance(missed, now.plusSeconds(86_400));
+                return new NextFireCalculator.Advance(missed, now.plusSeconds(86_400),
+                        java.util.List.copyOf(windows));
             }
             fire = next;
             if (missed >= NextFireCalculator.MISSED_COUNT_CAP) {
+                if (runAll) {
+                    ZonedDateTime jump = expr.next(now.atZone(zone));
+                    return new NextFireCalculator.Advance(missed,
+                            jump == null ? now.plusSeconds(86_400) : jump.toInstant(),
+                            java.util.List.copyOf(windows));
+                }
                 ZonedDateTime jump = expr.next(now.atZone(zone));
-                return new NextFireCalculator.Advance(missed,
-                        jump == null ? now.plusSeconds(86_400) : jump.toInstant());
+                Instant jumpAt = jump == null ? now.plusSeconds(86_400) : jump.toInstant();
+                return new NextFireCalculator.Advance(missed, jumpAt,
+                        java.util.List.of(jumpAt));
             }
         }
-        return new NextFireCalculator.Advance(missed, fire.toInstant());
+        return new NextFireCalculator.Advance(missed, fire.toInstant(),
+                java.util.List.of(fire.toInstant()));
     }
 
     public static Instant firstFire(JobSchedule schedule, Instant from) {
@@ -50,3 +64,4 @@ public final class CronSupport {
         return next == null ? from.plusSeconds(86_400) : next.toInstant();
     }
 }
+

@@ -31,6 +31,7 @@ public class ScheduleStore {
             Mappers.instant(rs, "last_enqueued_at"),
             rs.getLong("version"),
             1,
+            rs.getString("target_workflow"),
             Mappers.instant(rs, "created_at"));
 
     private final JdbcTemplate jdbc;
@@ -41,7 +42,7 @@ public class ScheduleStore {
 
     public record Insert(UUID tenantId, String name, String jobType, String payloadJson,
                          Long intervalMs, String cronExpr, String timezone,
-                         String missedPolicy) {
+                         String missedPolicy, String targetWorkflow) {
     }
 
     /**
@@ -61,19 +62,19 @@ public class ScheduleStore {
         var probe = new JobSchedule(id, draft.tenantId(), draft.name(), draft.jobType(),
                 "{}", kind, draft.intervalMs(), draft.cronExpr(), tz,
                 JobSchedule.MissedPolicy.COALESCE, JobSchedule.State.ACTIVE,
-                Instant.EPOCH, null, 0, 1, Instant.now());
+                Instant.EPOCH, null, 0, 1, draft.targetWorkflow(), Instant.now());
         Instant firstFire = kind == JobSchedule.Kind.CRON
                 ? CronSupport.firstFire(probe, Instant.now())
                 : NextFireCalculator.firstFire(draft.intervalMs(), Instant.now());
         jdbc.update("""
                         INSERT INTO job_schedules (id, tenant_id, name, job_type, payload_json,
-                            kind, interval_ms, cron_expr, timezone, missed_policy, next_fire_at)
-                        VALUES (?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?)
+                            kind, interval_ms, cron_expr, timezone, missed_policy, next_fire_at, target_workflow)
+                        VALUES (?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?)
                         """,
                 id, draft.tenantId(), draft.name(), draft.jobType(),
                 Mappers.canonicalize(draft.payloadJson()), kind.name(),
                 draft.intervalMs(), draft.cronExpr(), tz, draft.missedPolicy(),
-                Timestamp.from(firstFire));
+                Timestamp.from(firstFire), draft.targetWorkflow());
         return findById(id).orElseThrow();
     }
 
@@ -140,3 +141,5 @@ public class ScheduleStore {
         return jdbc.update("UPDATE job_schedules SET state = ? WHERE id = ?", state.name(), id) == 1;
     }
 }
+
+

@@ -19,7 +19,7 @@ class CronScheduleTest {
                              JobSchedule.MissedPolicy policy) {
         return new JobSchedule(UUID.randomUUID(), UUID.randomUUID(), "cron", "log", "{}",
                 JobSchedule.Kind.CRON, null, expr, zone, policy,
-                JobSchedule.State.ACTIVE, nextFire, null, 0, 1, Instant.now());
+                JobSchedule.State.ACTIVE, nextFire, null, 0, 1, null, Instant.now());
     }
 
     private static Instant at(String localDateTime, String zone) {
@@ -103,4 +103,6 @@ class CronScheduleTest {
         assertThat(zdt.getHour()).isEqualTo(9);
     }
 }
+
+
 

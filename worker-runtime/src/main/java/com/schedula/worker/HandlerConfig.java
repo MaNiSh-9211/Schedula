@@ -17,6 +17,8 @@ public class HandlerConfig {
         registry.register("log", new BuiltInHandlers.LogHandler());
         registry.register("sleep", new BuiltInHandlers.SleepHandler());
         registry.register("http", new BuiltInHandlers.HttpCallbackHandler());
+        registry.register("echo", ctx -> ctx.payloadJson());
         return registry;
     }
 }
+

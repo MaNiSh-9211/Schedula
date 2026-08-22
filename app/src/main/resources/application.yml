@@ -64,3 +64,5 @@ schedula:
 logging:
   level:
     com.schedula: INFO
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level [%thread] [job=%X{job:-} exec=%X{exec:-}] %logger{20}: %msg%n"

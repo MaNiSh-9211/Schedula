@@ -87,6 +87,15 @@ public class ApiKeyService {
                 ? Optional.of(tenantId) : Optional.empty();
     }
 
+    /** Rotates a tenant's credential; old key dies immediately, new plaintext returned once. */
+    public CreatedTenant rotate(UUID tenantId) {
+        String secret = randomSecret();
+        String plaintext = "sk_" + tenantId + "_" + secret;
+        jdbc.update("UPDATE tenants SET api_key_hash = ?, api_key_prefix = ? WHERE id = ?",
+                sha256Hex(secret), prefixOf(plaintext), tenantId);
+        return new CreatedTenant(tenantId, plaintext);
+    }
+
     public boolean isAdminKey(String presentedKey) {
         return !adminKey.isBlank() && presentedKey != null
                 && MessageDigest.isEqual(adminKey.getBytes(StandardCharsets.UTF_8),

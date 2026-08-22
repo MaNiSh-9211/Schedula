@@ -59,7 +59,8 @@ public class DlqController {
                 original.payloadJson(), original.maxAttempts(), original.retryPolicyJson(),
                 original.timeoutMs(), null, null,
                 original.idempotencyKey() + ":dlq-retry:" + UUID.randomUUID(),
-                original.requiredCapabilities(), original.requiredCpu(), original.requiredMemMb()));
+                original.requiredCapabilities(), original.requiredCpu(), original.requiredMemMb(),
+                original.queueName(), null));
         if (!queue.resolveDeadLetter(messageId)) {
             throw new IllegalTransitionException(JobStatus.DEAD, JobStatus.QUEUED);
         }

@@ -112,6 +112,11 @@ public class ExecutionStore {
         return updated != 0;
     }
 
+    public void saveResult(UUID execId, String resultJson) {
+        jdbc.update("UPDATE job_executions SET result_json = ?::jsonb WHERE id = ?",
+                resultJson, execId);
+    }
+
     public List<JobExecution> findOrphanedRunning() {
         return jdbc.query("SELECT * FROM job_executions WHERE status = 'RUNNING'", EXECUTION);
     }

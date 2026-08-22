@@ -3,6 +3,7 @@ package com.schedula.common.schedule;
 import com.schedula.common.model.JobSchedule;
 
 import java.time.Instant;
+import java.util.List;
 
 /**
  * Pure fixed-interval arithmetic. Cron evaluation lives in
@@ -18,10 +19,15 @@ public final class NextFireCalculator {
      */
     public static final int MISSED_COUNT_CAP = 10_000;
 
-    public record Advance(int missedCount, Instant newNextFireAt) {
+    public record Advance(int missedCount, Instant newNextFireAt,
+                          java.util.List<Instant> dueWindows) {
         public boolean hasMissed() {
             return missedCount > 0;
         }
+    }
+
+    private static Advance single(int missed, Instant next) {
+        return new Advance(missed, next, List.of(next));
     }
 
     private NextFireCalculator() {
@@ -37,17 +43,26 @@ public final class NextFireCalculator {
         long interval = schedule.intervalMs();
         Instant next = schedule.nextFireAt();
         int missed = 0;
+        var windows = new java.util.ArrayList<Instant>();
         while (!next.isAfter(now)) {
             missed++;
-            next = next.plusMillis(interval);
+            windows.add(next);
             if (missed >= MISSED_COUNT_CAP) {
-                return new Advance(missed, next);
+                // cap: degrade toward COALESCE, never explode the scheduler
+                if (schedule.missedPolicy() == JobSchedule.MissedPolicy.RUN_ALL) {
+                    return new Advance(missed, next, java.util.List.copyOf(windows));
+                }
+                return single(missed, next);
             }
+            next = next.plusMillis(interval);
         }
         return switch (schedule.missedPolicy()) {
-            case COALESCE, SKIP_TO_LATEST -> new Advance(missed, next);
-            case RUN_ALL -> throw new UnsupportedOperationException(
-                    "RUN_ALL catch-up is not supported yet; use COALESCE or SKIP_TO_LATEST");
+            case COALESCE, SKIP_TO_LATEST -> single(missed, next);
+            case RUN_ALL -> {
+                if (windows.isEmpty()) yield single(0, next);
+                Instant last = windows.get(windows.size() - 1);
+                yield new Advance(missed, next, java.util.List.copyOf(windows));
+            }
         };
     }
 
@@ -55,3 +70,5 @@ public final class NextFireCalculator {
         return from.plusMillis(intervalMs);
     }
 }
+
+

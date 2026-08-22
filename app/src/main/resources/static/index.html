@@ -16,6 +16,7 @@
     <button data-view="schedules">Schedules</button>
     <button data-view="dlq">DLQ</button>
     <button data-view="fleet">Fleet</button>
+    <button data-view="audits">Audits</button>
   </nav>
   <div id="keybox">
     <input id="apikey" type="password" placeholder="X-API-Key (sk_...)" autocomplete="off">
@@ -147,6 +148,15 @@
     <thead><tr><th>message</th><th>job</th><th>type</th><th>deliveries</th><th>error</th><th>resolved</th><th>actions</th></tr></thead>
     <tbody></tbody>
   </table>
+</section>
+
+<!-- AUDITS -->
+<section id="view-audits" class="view">
+  <div class="toolbar"><button onclick="loadAudits()">refresh</button>
+    <span class="muted">requires admin key</span></div>
+  <table id="audits-table">
+    <thead><tr><th>time</th><th>actor</th><th>action</th><th>target type</th><th>target</th></tr></thead>
+    <tbody></tbody></table>
 </section>
 
 <!-- FLEET -->

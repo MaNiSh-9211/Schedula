@@ -54,7 +54,7 @@ class FencedWritesIT {
 
         var schedule = schedules.create(new ScheduleStore.Insert(
                 com.schedula.api.JobsController.DEFAULT_TENANT,
-                "fenced-" + java.util.UUID.randomUUID(), "log", "{}", 60_000L, null, null, "COALESCE"));
+                "fenced-" + java.util.UUID.randomUUID(), "log", "{}", 60_000L, null, null, "COALESCE", null));
 
         // leader A dies; B takes over with a strictly higher fencing token
         Thread.sleep(LEASE_MS + 300);

@@ -38,18 +38,21 @@ public class SchedulerLoop {
     private final PostgresQueue queue;
     private final Clock clock;
     private final com.schedula.coordination.Coordinator coordinator;
+    private final com.schedula.engine.workflow.WorkflowDriver workflowDriver;
     private final Timer schedulerLag;
     private final Counter scheduleTicksTotal;
     private final Counter missedOccurrencesTotal;
 
     public SchedulerLoop(JobStore jobs, ScheduleStore schedules, PostgresQueue queue,
                          Clock clock, com.schedula.coordination.Coordinator coordinator,
+                         com.schedula.engine.workflow.WorkflowDriver workflowDriver,
                          MeterRegistry meters) {
         this.jobs = jobs;
         this.schedules = schedules;
         this.queue = queue;
         this.clock = clock;
         this.coordinator = coordinator;
+        this.workflowDriver = workflowDriver;
         this.schedulerLag = Timer.builder("schedula_scheduler_lag")
                 .description("dispatch time minus scheduled_for")
                 .publishPercentiles(0.5, 0.95, 0.99)
@@ -84,7 +87,7 @@ public class SchedulerLoop {
                 log.warn("job {} left SCHEDULED before enqueue; skipping", job.id());
                 continue;
             }
-            queue.enqueue(job.id(), job.tenantId(), null, job.priority(), now);
+            queue.enqueue(job.id(), job.queueName(), job.tenantId(), null, job.priority(), now);
             if (job.scheduledFor() != null) {
                 schedulerLag.record(java.time.Duration.between(job.scheduledFor(), now));
             }
@@ -113,20 +116,47 @@ public class SchedulerLoop {
                 log.debug("schedule {} advance lost race; skipping tick", s.id());
                 continue;
             }
-            UUID jobId = createOccurrence(s, advance);
+            // Airflow-style backfill: RUN_ALL materializes every missed window (capped);
+            // COALESCE/SKIP produce exactly one occurrence.
+            int createdCount = 0;
+            UUID lastJobId = null;
+            for (Instant window : advance.dueWindows()) {
+                try {
+                    if (s.targetWorkflow() != null && !s.targetWorkflow().isBlank()) {
+                        workflowDriver.start(s.tenantId(), s.targetWorkflow(),
+                                "{\"schedule\":\"" + s.name() + "\",\"window\":\""
+                                        + window + "\"}");
+                        createdCount++;
+                        continue;
+                    }
+                    UUID created = createOccurrence(s, window);
+                    createdCount++;
+                    lastJobId = created;
+                } catch (RuntimeException e) {
+                    log.warn("occurrence creation failed for schedule {} window {}: {}",
+                            s.name(), window, e.toString());
+                }
+            }
             scheduleTicksTotal.increment();
             if (advance.missedCount() > 1) {
                 missedOccurrencesTotal.increment(advance.missedCount() - 1L);
             }
-            log.info("schedule {} fired: job={} missed={}", s.name(), jobId, advance.missedCount());
+            log.info("schedule {} fired: occurrences={} missed={} last={}",
+                    s.name(), createdCount, advance.missedCount(), lastJobId);
         }
     }
 
-    private UUID createOccurrence(JobSchedule s, Advance advance) {
+    private java.util.UUID createOccurrence(JobSchedule s, Instant window) {
         Job created = jobs.create(new JobStore.Insert(
                 s.tenantId(), s.jobType(), 0, s.payloadJson(), null, "{}",
-                60_000L, clock.now(), s.id(), s.name() + ":" + advance.newNextFireAt().toEpochMilli(), null, null, null));
+                60_000L, window, s.id(),
+                s.name() + ":w:" + window.toEpochMilli(), null, null, null,
+                s.targetWorkflow() == null ? "default" : "default",
+                null));
         return created.id();
     }
 }
+
+
+
 

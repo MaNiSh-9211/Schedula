@@ -28,6 +28,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URI;
+import java.util.Map;
 import java.time.Instant;
 import java.util.List;
 import java.util.Set;
@@ -45,7 +46,8 @@ public class JobsController {
                                 com.fasterxml.jackson.databind.JsonNode retryPolicy,
                                 Long timeoutMs, Instant scheduledFor,
                                 java.util.List<String> requiredCapabilities,
-                                Integer requiredCpu, Long requiredMemMb) {
+                                Integer requiredCpu, Long requiredMemMb,
+                                String queueName, String webhookUrl) {
     }
 
     private final JobStore jobs;
@@ -103,7 +105,8 @@ public class JobsController {
                 retryPolicyJson,
                 req.timeoutMs() == null ? 60_000L : req.timeoutMs(),
                 req.scheduledFor(), null, idempotencyKey,
-                req.requiredCapabilities(), req.requiredCpu(), req.requiredMemMb()));
+                req.requiredCapabilities(), req.requiredCpu(), req.requiredMemMb(),
+                req.queueName(), req.webhookUrl()));
         if (result.fresh()) {
             submittedTotal.increment();
             return ResponseEntity.created(URI.create("/v1/jobs/" + result.job().id())).body(result.job());
@@ -130,13 +133,62 @@ public class JobsController {
     }
 
     @GetMapping
-    List<Job> list(@RequestParam(required = false) UUID tenantId,
-                   @RequestParam(required = false) String status,
-                   @RequestParam(defaultValue = "50") int limit,
-                   @RequestParam(defaultValue = "0") int offset,
-                   HttpServletRequest http) {
-        return jobs.listByTenant(resolveTenant(http, tenantId), status,
-                Math.min(limit, 200), offset);
+    ResponseEntity<List<Job>> list(@RequestParam(required = false) UUID tenantId,
+                                   @RequestParam(required = false) String status,
+                                   @RequestParam(defaultValue = "50") int limit,
+                                   @RequestParam(defaultValue = "0") int offset,
+                                   @RequestParam(required = false) Instant before,
+                                   HttpServletRequest http) {
+        UUID scope = resolveTenant(http, tenantId);
+        List<Job> page;
+        if (before != null) {
+            page = jobs.listBefore(scope, status, before, Math.min(limit, 200));
+        } else {
+            page = jobs.listByTenant(scope, status, Math.min(limit, 200), offset);
+        }
+        var builder = ResponseEntity.ok();
+        if (page.size() >= Math.min(limit, 200) && !page.isEmpty()) {
+            // cursor for the next older page (keyset, stable under inserts)
+            builder.header("X-Next-Cursor", page.get(page.size() - 1).createdAt().toString());
+        }
+        return builder.body(page);
+    }
+
+    /**
+     * Bulk submission (cloud-queue parity): up to 500 jobs in one transaction.
+     * Per-job idempotency keys still dedupe inside the batch.
+     */
+    public record BatchRequest(List<SubmitRequest> jobs) {
+    }
+
+    @PostMapping("/batch")
+    ResponseEntity<?> batch(@RequestBody BatchRequest req, HttpServletRequest http) {
+        if (req.jobs() == null || req.jobs().isEmpty()) {
+            throw new IllegalArgumentException("jobs array required");
+        }
+        if (req.jobs().size() > 500) {
+            throw new IllegalArgumentException("batch capped at 500");
+        }
+        List<Map<String, Object>> results = tx.execute(s -> req.jobs().stream().map(r -> {
+            UUID tenantId = resolveTenant(http, r.tenantId());
+            String retryPolicyJson = r.retryPolicy() == null ? "{}" : r.retryPolicy().toString();
+            RetryPolicy policy = RetryPolicy.fromJson(retryPolicyJson);
+            quota.admissionCheck(tenantId);
+            var result = jobs.createReturningFreshness(new JobStore.Insert(
+                    tenantId, r.jobType(), r.priority() == null ? 0 : r.priority(),
+                    r.payload() == null ? "{}" : r.payload().toString(),
+                    r.maxAttempts() == null ? policy.maxAttempts() : r.maxAttempts(),
+                    retryPolicyJson,
+                    r.timeoutMs() == null ? 60_000L : r.timeoutMs(),
+                    r.scheduledFor(), null, null,
+                    r.requiredCapabilities(), r.requiredCpu(), r.requiredMemMb(),
+                    r.queueName(), r.webhookUrl()));
+            return Map.<String, Object>of(
+                    "id", result.job().id().toString(),
+                    "fresh", result.fresh());
+        }).toList());
+        submittedTotal.increment(results.stream().filter(m -> Boolean.TRUE.equals(m.get("fresh"))).count());
+        return ResponseEntity.accepted().body(Map.of("submitted", results));
     }
 
     /**
@@ -209,10 +261,11 @@ public class JobsController {
                 old.tenantId(), old.jobType(), old.priority(), old.payloadJson(),
                 old.maxAttempts(), old.retryPolicyJson(), old.timeoutMs(),
                 null, null, old.idempotencyKey() + ":retry:" + UUID.randomUUID(),
-                old.requiredCapabilities(), old.requiredCpu(), old.requiredMemMb()));
+                old.requiredCapabilities(), old.requiredCpu(), old.requiredMemMb(), null, null));
         submittedTotal.increment();
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(fresh);
     }
 }
+
 
 

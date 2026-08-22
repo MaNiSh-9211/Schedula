@@ -209,7 +209,7 @@ public class WorkflowDriver {
                         exec.tenantId(), t.jobType(), 0, payload, null, "{}",
                         60_000L, clock.now(), null,
                         "wfundo:" + exec.id() + ":" + t.taskKey(),
-                        List.of(), 0, 0L));
+                        List.of(), 0, 0L, null, null));
                 if (store.transitionTask(t.id(), WorkflowTask.Status.BLOCKED,
                         WorkflowTask.Status.RUNNING)) {
                     store.attachJob(t.id(), undoJob.id(), 1);
@@ -223,7 +223,7 @@ public class WorkflowDriver {
                     exec.tenantId(), t.jobType(), 0, t.payloadJson(),
                     t.maxAttempts(), "{}", 60_000L, clock.now(), null,
                     "wftask:" + exec.id() + ":" + t.taskKey() + ":1",
-                    List.of(), 0, 0L));
+                    List.of(), 0, 0L, null, null));
             if (store.transitionTask(t.id(), WorkflowTask.Status.BLOCKED,
                     WorkflowTask.Status.RUNNING)) {
                 store.attachJob(t.id(), job.id(), 1);
@@ -311,7 +311,7 @@ public class WorkflowDriver {
                     exec.tenantId(), u.jobType(), 0, payload, null, "{}",
                     60_000L, clock.now(), null,
                     "wfundo:" + exec.id() + ":" + u.taskKey(),
-                    List.of(), 0, 0L));
+                    List.of(), 0, 0L, null, null));
             if (store.transitionTask(u.id(), WorkflowTask.Status.BLOCKED,
                     WorkflowTask.Status.RUNNING)) {
                 store.attachJob(u.id(), undoJob.id(), 1);
@@ -353,3 +353,6 @@ public class WorkflowDriver {
                 .orElseThrow(() -> new IllegalStateException("orphan task"));
     }
 }
+
+
+

@@ -26,15 +26,16 @@ public final class BuiltInHandlers {
         private static final Logger log = LoggerFactory.getLogger("schedula.job.log");
 
         @Override
-        public void handle(JobContext ctx) {
+        public String handle(JobContext ctx) {
             log.info("job executed tenant={} job={} type={} payload={}",
                     ctx.tenantId(), ctx.jobId(), ctx.jobType(), ctx.payloadJson());
+            return null;
         }
     }
 
     public static class SleepHandler implements com.schedula.worker.JobHandler {
         @Override
-        public void handle(JobContext ctx) throws Exception {
+        public String handle(JobContext ctx) throws Exception {
             long remaining = extractMs(ctx.payloadJson());
             // cooperative: wake every 50ms to observe the cancellation token
             while (remaining > 0 && !ctx.cancellation().isCancelled()) {
@@ -42,6 +43,7 @@ public final class BuiltInHandlers {
                 Thread.sleep(slice);
                 remaining -= slice;
             }
+            return null;
         }
 
         private static long extractMs(String json) {
@@ -58,7 +60,7 @@ public final class BuiltInHandlers {
                 .build();
 
         @Override
-        public void handle(JobContext ctx) throws Exception {
+        public String handle(JobContext ctx) throws Exception {
             String url = extractStringField(ctx.payloadJson(), "url");
             if (url == null || url.isBlank()) {
                 throw new ClassifiedException(ErrorClass.VALIDATION, "http job requires payload.url");
@@ -82,6 +84,7 @@ public final class BuiltInHandlers {
             if (code >= 400) {
                 throw new ClassifiedException(ErrorClass.PERMANENT, "callback rejected " + code);
             }
+            return "{\"callbackStatus\":" + code + "}";
         }
 
         private static String idempotencyKey(JobContext ctx) {
@@ -96,3 +99,4 @@ public final class BuiltInHandlers {
         }
     }
 }
+

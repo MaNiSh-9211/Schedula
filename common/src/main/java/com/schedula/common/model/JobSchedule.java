@@ -19,6 +19,7 @@ public record JobSchedule(
         Instant lastEnqueuedAt,
         long version,
         int weight,
+        String targetWorkflow,
         Instant createdAt) {
 
     public enum Kind { FIXED_INTERVAL, CRON }

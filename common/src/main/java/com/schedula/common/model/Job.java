@@ -9,6 +9,7 @@ public record Job(
         UUID id,
         UUID tenantId,
         String jobType,
+        String queueName,
         int priority,
         JobStatus status,
         String payloadJson,
@@ -24,6 +25,9 @@ public record Job(
         java.util.List<String> requiredCapabilities,
         int requiredCpu,
         long requiredMemMb,
+        String webhookUrl,
+        String webhookState,
+        int webhookAttempts,
         Instant createdAt,
         Instant updatedAt) {
 }

@@ -158,11 +158,13 @@ class FullFlowIT {
     @Test
     void fixedIntervalScheduleProducesOccurrences() {
         schedules.create(new ScheduleStore.Insert(JobsController.DEFAULT_TENANT,
-                "it-schedule-" + UUID.randomUUID(), "log", "{}", 500L, null, null, "COALESCE"));
+                "it-schedule-" + UUID.randomUUID(), "log", "{}", 500L, null, null, "COALESCE",
+                null));
         Await.until(
                 () -> jdbc.queryForObject(
                         "SELECT count(*) FROM jobs WHERE schedule_id IS NOT NULL", Integer.class),
                 c -> c != null && c >= 2, 20_000);
     }
 }
+
 

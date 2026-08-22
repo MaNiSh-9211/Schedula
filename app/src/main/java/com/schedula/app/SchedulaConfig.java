@@ -58,6 +58,9 @@ public class SchedulaConfig {
                 sweeper.scheduleAtFixedRate(recovery::recover, sweepMs, sweepMs, TimeUnit.MILLISECONDS);
                 sweeper.scheduleAtFixedRate(retention::run,
                         Math.max(sweepMs, 60_000L), Math.max(sweepMs, 60_000L), TimeUnit.MILLISECONDS);
+                var webhooks = new com.schedula.engine.WebhookDispatcher(jdbc, coordinator, meters,
+                        System.getenv().getOrDefault("SCHEDULA_WEBHOOK_SECRET", "schedula-dev-secret"));
+                sweeper.scheduleAtFixedRate(webhooks::tick, sweepMs, sweepMs, TimeUnit.MILLISECONDS);
 
                 // workflow DAG driver: leader-gated internally; recovers purely from rows
                 var wfDriver = new com.schedula.engine.workflow.WorkflowDriver(

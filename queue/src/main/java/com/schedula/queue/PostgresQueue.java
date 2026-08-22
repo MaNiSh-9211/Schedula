@@ -52,21 +52,25 @@ public class PostgresQueue {
     }
 
     /** Enqueue must run inside the same transaction as the state change that warrants it. */
-    public void enqueue(UUID jobId, UUID tenantId, UUID executionId, int priority, Instant availableAt) {
+    public void enqueue(UUID jobId, String queueName, UUID tenantId, UUID executionId, int priority, Instant availableAt) {
         jdbc.update("""
                         INSERT INTO queue_messages (id, queue_name, job_execution_id, job_id, tenant_id,
                             priority, status, available_at)
                         VALUES (?, ?, ?, ?, ?, ?, 'READY', ?)
                         """,
-                com.schedula.common.ids.UuidV7.generate(), DEFAULT_QUEUE, executionId, jobId,
+                com.schedula.common.ids.UuidV7.generate(), queueName == null || queueName.isBlank() ? DEFAULT_QUEUE : queueName, executionId, jobId,
                 tenantId, priority, Timestamp.from(availableAt));
     }
 
-    public record ClaimFilter(java.util.List<String> excludeJobTypes,
+    public record ClaimFilter(java.util.List<String> queues,
+                              java.util.List<String> excludeJobTypes,
                               java.util.List<UUID> excludeTenants,
                               int minFreeCpu, long minFreeMemMb) {
+        public static ClaimFilter of(java.util.List<String> queues) {
+            return new ClaimFilter(queues, java.util.List.of(), java.util.List.of(), 0, 0);
+        }
         public static ClaimFilter unrestricted() {
-            return new ClaimFilter(java.util.List.of(), java.util.List.of(), 0, 0);
+            return new ClaimFilter(java.util.List.of("default"), java.util.List.of(), java.util.List.of(), 0, 0);
         }
     }
 
@@ -76,12 +80,17 @@ public class PostgresQueue {
                 && filter.excludeTenants().isEmpty()
                 && filter.minFreeCpu() <= 0 && filter.minFreeMemMb() <= 0;
         if (unrestricted) {
-            return claimUnrestricted(workerId, batch, visibilityTimeoutMs);
+            return claimUnrestricted(workerId, batch, visibilityTimeoutMs, filter);
         }
         return claimConstrained(workerId, batch, visibilityTimeoutMs, filter);
     }
 
     private List<QueueMessage> claimUnrestricted(UUID workerId, int batch, long visibilityTimeoutMs) {
+        return claimUnrestricted(workerId, batch, visibilityTimeoutMs, ClaimFilter.unrestricted());
+    }
+
+    private List<QueueMessage> claimUnrestricted(UUID workerId, int batch, long visibilityTimeoutMs,
+                                                 ClaimFilter filter) {
         List<QueueMessage> claimed = jdbc.query("""
                 UPDATE queue_messages m
                 SET status = 'CLAIMED', claim_owner = ?, claim_expires_at = now() + (? * interval '1 millisecond'),
@@ -89,7 +98,7 @@ public class PostgresQueue {
                 WHERE m.id IN (
                     SELECT m2.id FROM queue_messages m2
                     LEFT JOIN jobs j ON j.id = m2.job_id
-                    WHERE m2.queue_name = ? AND m2.status = 'READY' AND m2.available_at <= now()
+                    WHERE m2.queue_name IN (SELECT unnest(subscribed_queues) FROM workers WHERE id = ?) AND m2.status = 'READY' AND m2.available_at <= now()
                       AND COALESCE(j.required_capabilities, '{}'::text[])
                             <@ (SELECT capabilities FROM workers WHERE id = ?)
                       AND COALESCE(j.required_cpu, 0) <= 0
@@ -101,7 +110,8 @@ public class PostgresQueue {
                     FOR UPDATE OF m2 SKIP LOCKED
                 )
                 RETURNING m.*
-                """, MESSAGE, workerId, (double) visibilityTimeoutMs, DEFAULT_QUEUE, workerId,
+                """, MESSAGE, workerId, (double) visibilityTimeoutMs,
+                workerId, workerId,
                 workerId, batch);
         claimsTotal.increment(claimed.size());
         return claimed;
@@ -120,14 +130,14 @@ public class PostgresQueue {
         List<QueueMessage> candidates = jdbc.query("""
                 SELECT m2.* FROM queue_messages m2
                 LEFT JOIN jobs j ON j.id = m2.job_id
-                WHERE m2.queue_name = ? AND m2.status = 'READY' AND m2.available_at <= now()
+                WHERE m2.queue_name IN (SELECT unnest(subscribed_queues) FROM workers WHERE id = ?) AND m2.status = 'READY' AND m2.available_at <= now()
                   AND COALESCE(j.required_capabilities, '{}'::text[])
                         <@ (SELECT capabilities FROM workers WHERE id = ?)
                   AND EXISTS (SELECT 1 FROM workers w WHERE w.id = ? AND w.status = 'HEALTHY')
                 ORDER BY m2.priority DESC, m2.enqueue_seq
                 LIMIT ?
                 FOR UPDATE OF m2 SKIP LOCKED
-                """, MESSAGE, DEFAULT_QUEUE, workerId, workerId, batch * 4);
+                """, MESSAGE, workerId, workerId, workerId, batch * 4);
 
         // group per tenant, preserving priority order within each tenant
         var byTenant = new java.util.LinkedHashMap<UUID, java.util.ArrayDeque<QueueMessage>>();
@@ -436,3 +446,13 @@ public class PostgresQueue {
                 messageId);
     }
 }
+
+
+
+
+
+
+
+
+
+

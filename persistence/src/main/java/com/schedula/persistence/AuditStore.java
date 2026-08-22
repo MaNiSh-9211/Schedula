@@ -15,6 +15,13 @@ public class AuditStore {
         this.jdbc = jdbc;
     }
 
+    public java.util.List<java.util.Map<String, Object>> recent(int limit) {
+        return jdbc.queryForList("""
+                SELECT id, actor, tenant_id, action, target_type, target_id, occurred_at
+                FROM audit_events ORDER BY id DESC LIMIT ?
+                """, limit);
+    }
+
     public void append(String actor, UUID tenantId, String action, String targetType,
                        String targetId, String detailJson) {
         jdbc.update("""
@@ -25,3 +32,4 @@ public class AuditStore {
                 detailJson == null ? "{}" : detailJson);
     }
 }
+

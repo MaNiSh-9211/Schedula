@@ -42,6 +42,7 @@ final class Mappers {
                 uuid(rs, "id"),
                 uuid(rs, "tenant_id"),
                 rs.getString("job_type"),
+                rs.getString("queue_name"),
                 rs.getInt("priority"),
                 JobStatus.valueOf(rs.getString("status")),
                 rs.getString("payload_json"),
@@ -57,6 +58,9 @@ final class Mappers {
                 required,
                 rs.getInt("required_cpu"),
                 rs.getLong("required_mem_mb"),
+                rs.getString("webhook_url"),
+                rs.getString("webhook_state"),
+                rs.getInt("webhook_attempts"),
                 instant(rs, "created_at"),
                 instant(rs, "updated_at"));
     }
@@ -75,6 +79,7 @@ final class Mappers {
                 instant(rs, "finished_at"),
                 rs.getString("error_class"),
                 rs.getString("error_detail"),
+                rs.getString("result_json"),
                 instant(rs, "created_at"));
     }
 

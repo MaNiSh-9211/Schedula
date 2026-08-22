@@ -16,5 +16,6 @@ public record JobExecution(
         Instant finishedAt,
         String errorClass,
         String errorDetail,
+        String resultJson,
         Instant createdAt) {
 }

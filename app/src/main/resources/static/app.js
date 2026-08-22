@@ -43,7 +43,7 @@ document.querySelectorAll("nav button").forEach(b =>
     b.classList.add("active");
     $("#" + "view-" + b.dataset.view).classList.add("active");
     ({ overview: loadOverview, jobs: loadJobs, workflows: loadWorkflows,
-       schedules: loadSchedules, dlq: loadDlq, fleet: loadFleet }[b.dataset.view] || (() => {}))();
+       schedules: loadSchedules, dlq: loadDlq, fleet: loadFleet, audits: loadAudits }[b.dataset.view] || (() => {}))();
   });
 
 /* ---------- key handling ---------- */
@@ -346,6 +346,21 @@ window.dlqDelete = async (id) => {
   try { await call("/v1/dlq/" + id, { method: "DELETE" }); toast("deleted"); loadDlq(); }
   catch (e) { toast(e.message, true); }
 };
+
+/* ---------- audits ---------- */
+async function loadAudits() {
+  try {
+    const rows = await call("/v1/admin/audits?limit=100");
+    $("#audits-table tbody").innerHTML = rows.map(a => `
+      <tr>
+        <td class="mono small">${fmt(a.occurred_at)}</td>
+        <td class="mono small">${esc(a.actor)}</td>
+        <td>${esc(a.action)}</td>
+        <td>${esc(a.target_type)}</td>
+        <td class="mono small">${esc(a.target_id || "")}</td>
+      </tr>`).join("") || "<tr><td colspan=5 class=muted>no audit entries</td></tr>";
+  } catch (e) { toast(e.message, true); }
+}
 
 /* ---------- fleet ---------- */
 async function loadFleet() {

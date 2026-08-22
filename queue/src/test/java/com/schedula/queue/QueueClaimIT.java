@@ -45,7 +45,7 @@ class QueueClaimIT {
 
     private static UUID enqueueOne(int priority) {
         UUID jobId = UUID.randomUUID();
-        queue.enqueue(jobId, UUID.randomUUID(), null, priority, java.time.Instant.now());
+        queue.enqueue(jobId, "default", UUID.randomUUID(), null, priority, java.time.Instant.now());
         return jobId;
     }
 
@@ -53,8 +53,8 @@ class QueueClaimIT {
     private static UUID registerWorker() {
         UUID id = UUID.randomUUID();
         jdbc.update("""
-                INSERT INTO workers (id, name, version, max_concurrency, capabilities, status)
-                VALUES (?, 'it-worker', 'test', 8, '{}', 'HEALTHY')
+                INSERT INTO workers (id, name, version, max_concurrency, capabilities, subscribed_queues, status)
+                VALUES (?, 'it-worker', 'test', 8, '{}', '{default}', 'HEALTHY')
                 """, id);
         return id;
     }
@@ -153,6 +153,7 @@ class QueueClaimIT {
         throw new AssertionError("message never reached DLQ");
     }
 }
+
 
 
 

@@ -23,7 +23,7 @@ public class SchedulesController {
     public record CreateRequest(UUID tenantId, @NotBlank String name, @NotBlank String jobType,
                                 com.fasterxml.jackson.databind.JsonNode payload,
                                 @Positive Long intervalMs, String cronExpr, String timezone,
-                                String missedPolicy) {
+                                String missedPolicy, String targetWorkflow) {
     }
 
     private final ScheduleStore schedules;
@@ -43,7 +43,8 @@ public class SchedulesController {
                 req.tenantId() == null ? JobsController.DEFAULT_TENANT : req.tenantId(),
                 req.name(), req.jobType(),
                 req.payload() == null ? "{}" : req.payload().toString(),
-                req.intervalMs(), req.cronExpr(), req.timezone(), policy));
+                req.intervalMs(), req.cronExpr(), req.timezone(), policy,
+                req.targetWorkflow()));
         return org.springframework.http.ResponseEntity
                 .created(URI.create("/v1/schedules/" + created.id())).body(created);
     }

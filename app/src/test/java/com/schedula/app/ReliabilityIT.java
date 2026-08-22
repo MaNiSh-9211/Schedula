@@ -65,6 +65,7 @@ class ReliabilityIT {
                 if (ctx.attempt() == 1) {
                     throw new ClassifiedException(ErrorClass.TRANSIENT, "first attempt fails");
                 }
+                return null;
             });
             // long-running type used by concurrency-cap scenarios
             registry.register("slow", new com.schedula.worker.handlers.BuiltInHandlers.SleepHandler());
@@ -219,4 +220,5 @@ class ReliabilityIT {
         assertThat(second.resultJson()).contains("ok");
     }
 }
+
 

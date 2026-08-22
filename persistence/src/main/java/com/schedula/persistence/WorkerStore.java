@@ -17,11 +17,12 @@ public class WorkerStore {
     }
 
     public void register(UUID workerId, String name, String appVersion, int maxConcurrency,
-                         java.util.List<String> capabilities, int cpuCapacity, long memCapacityMb) {
+                         java.util.List<String> capabilities, int cpuCapacity, long memCapacityMb,
+                         java.util.List<String> subscribedQueues) {
         jdbc.update("""
                         INSERT INTO workers (id, name, version, max_concurrency, capabilities,
-                            cpu_capacity, mem_capacity_mb, status)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, 'HEALTHY')
+                            cpu_capacity, mem_capacity_mb, subscribed_queues, status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'HEALTHY')
                         ON CONFLICT (id) DO UPDATE SET
                             name = EXCLUDED.name,
                             version = EXCLUDED.version,
@@ -29,12 +30,14 @@ public class WorkerStore {
                             capabilities = EXCLUDED.capabilities,
                             cpu_capacity = EXCLUDED.cpu_capacity,
                             mem_capacity_mb = EXCLUDED.mem_capacity_mb,
+                            subscribed_queues = EXCLUDED.subscribed_queues,
                             status = 'HEALTHY',
                             last_heartbeat_at = now()
                         """,
                 workerId, name, appVersion, maxConcurrency,
                 capabilities == null ? new String[0] : capabilities.toArray(new String[0]),
-                cpuCapacity, memCapacityMb);
+                cpuCapacity, memCapacityMb,
+                subscribedQueues == null ? new String[]{"default"} : subscribedQueues.toArray(new String[0]));
     }
 
     public void heartbeat(UUID workerId) {

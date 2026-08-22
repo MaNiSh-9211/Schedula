@@ -15,7 +15,7 @@ class NextFireCalculatorTest {
     private JobSchedule schedule(long intervalMs, Instant nextFire, JobSchedule.MissedPolicy policy) {
         return new JobSchedule(UUID.randomUUID(), UUID.randomUUID(), "s", "log", "{}",
                 JobSchedule.Kind.FIXED_INTERVAL, intervalMs, null, "UTC", policy,
-                JobSchedule.State.ACTIVE, nextFire, null, 0, 1, Instant.now());
+                JobSchedule.State.ACTIVE, nextFire, null, 0, 1, null, Instant.now());
     }
 
     @Test
@@ -44,11 +44,14 @@ class NextFireCalculatorTest {
     }
 
     @Test
-    void runAllNotSupportedYet() {
+    void runAllReturnsEveryMissedWindowBounded() {
         Instant t0 = Instant.parse("2026-01-01T00:00:00Z");
-        assertThatThrownBy(() ->
-                NextFireCalculator.advance(schedule(60_000, t0, JobSchedule.MissedPolicy.RUN_ALL), t0))
-                .isInstanceOf(UnsupportedOperationException.class);
+        Instant now = t0.plusSeconds(210);
+        Advance a = NextFireCalculator.advance(schedule(60_000, t0, JobSchedule.MissedPolicy.RUN_ALL), now);
+        assertThat(a.missedCount()).isEqualTo(4);
+        assertThat(a.dueWindows()).hasSize(4);
+        assertThat(a.dueWindows().get(0)).isEqualTo(t0);
+        assertThat(a.newNextFireAt()).isEqualTo(t0.plusSeconds(240));
     }
 
     @Test
@@ -59,3 +62,5 @@ class NextFireCalculatorTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 }
+
+
