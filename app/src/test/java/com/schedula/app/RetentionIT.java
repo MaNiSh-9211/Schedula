@@ -29,7 +29,8 @@ import static org.assertj.core.api.Assertions.assertThat;
         "schedula.recovery.sweep-interval-ms=500",
         "schedula.queue.visibility-timeout-ms=4000",
         "schedula.retention.terminal-job-hours=0",
-        "logging.level.com.schedula=WARN"
+        "logging.level.com.schedula=WARN",
+        "schedula.auth.enabled=false"
 })
 @org.springframework.context.annotation.Import(ReliabilityIT.TestHandlers.class)
 class RetentionIT {
@@ -110,3 +111,4 @@ class RetentionIT {
                 .isLessThan(12.0);
     }
 }
+

@@ -44,7 +44,8 @@ import static org.assertj.core.api.Assertions.assertThat;
         "schedula.worker.poll-interval-ms=100",
         "schedula.recovery.sweep-interval-ms=500",
         "schedula.queue.visibility-timeout-ms=4000",
-        "logging.level.com.schedula=DEBUG"
+        "logging.level.com.schedula=DEBUG",
+        "schedula.auth.enabled=false"
 })
 @Import(ReliabilityIT.TestHandlers.class)
 class ReliabilityIT {
@@ -218,3 +219,4 @@ class ReliabilityIT {
         assertThat(second.resultJson()).contains("ok");
     }
 }
+

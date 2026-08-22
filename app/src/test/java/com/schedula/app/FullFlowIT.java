@@ -36,7 +36,8 @@ import static org.assertj.core.api.Assertions.assertThat;
         "schedula.worker.poll-interval-ms=100",
         "schedula.recovery.sweep-interval-ms=500",
         "schedula.queue.visibility-timeout-ms=4000",
-        "logging.level.com.schedula=DEBUG"
+        "logging.level.com.schedula=DEBUG",
+        "schedula.auth.enabled=false"
 })
 @Import(FullFlowIT.TestHandlers.class)
 class FullFlowIT {
@@ -164,3 +165,4 @@ class FullFlowIT {
                 c -> c != null && c >= 2, 20_000);
     }
 }
+

@@ -25,7 +25,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Testcontainers
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "schedula.roles.scheduler=false",
-        "schedula.roles.worker=false"
+        "schedula.roles.worker=false",
+        "schedula.auth.enabled=false"
 })
 class FencedWritesIT {
 
@@ -100,3 +101,4 @@ class FencedWritesIT {
         });
     }
 }
+

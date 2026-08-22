@@ -6,11 +6,13 @@ import com.schedula.common.model.Job;
 import com.schedula.common.model.JobExecution;
 import com.schedula.common.retry.RetryPolicy;
 import com.schedula.persistence.AuditStore;
+import com.schedula.api.auth.RequestTenant;
 import com.schedula.persistence.ExecutionStore;
 import com.schedula.persistence.JobStore;
 import com.schedula.queue.PostgresQueue;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import org.springframework.http.HttpStatus;
@@ -66,14 +68,23 @@ public class JobsController {
         this.submittedTotal = Counter.builder("schedula_job_submitted_total").register(meters);
     }
 
+    /** Tenant scope comes from the authenticated key; admins may target any tenant. */
+    private UUID resolveTenant(HttpServletRequest http, UUID requested) {
+        if (RequestTenant.isAdmin(http)) {
+            return requested == null ? DEFAULT_TENANT : requested;
+        }
+        return RequestTenant.tenant(http).orElse(DEFAULT_TENANT);
+    }
+
     /**
      * Durable-before-ack: the job row commits before 202 returns. Idempotency-Key dedups
      * via a unique constraint; a racing duplicate receives the original job (ADR-002/§88).
      */
     @PostMapping
     ResponseEntity<Job> submit(@RequestBody @Valid SubmitRequest req,
-                               @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
-        UUID tenantId = req.tenantId() == null ? DEFAULT_TENANT : req.tenantId();
+                               @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+                               HttpServletRequest http) {
+        UUID tenantId = resolveTenant(http, req.tenantId());
         String retryPolicyJson = req.retryPolicy() == null ? "{}" : req.retryPolicy().toString();
         RetryPolicy policy = RetryPolicy.fromJson(retryPolicyJson);
         quota.admissionCheck(tenantId);
@@ -107,8 +118,9 @@ public class JobsController {
     List<Job> list(@RequestParam(required = false) UUID tenantId,
                    @RequestParam(required = false) String status,
                    @RequestParam(defaultValue = "50") int limit,
-                   @RequestParam(defaultValue = "0") int offset) {
-        return jobs.listByTenant(tenantId == null ? DEFAULT_TENANT : tenantId, status,
+                   @RequestParam(defaultValue = "0") int offset,
+                   HttpServletRequest http) {
+        return jobs.listByTenant(resolveTenant(http, tenantId), status,
                 Math.min(limit, 200), offset);
     }
 
@@ -187,4 +199,5 @@ public class JobsController {
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(fresh);
     }
 }
+
 

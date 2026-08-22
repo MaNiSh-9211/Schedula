@@ -30,6 +30,10 @@ management:
         enabled: true
 
 schedula:
+  auth:
+    enabled: ${SCHEDULA_AUTH_ENABLED:true}
+    admin-key: ${SCHEDULA_ADMIN_KEY:}
+    default-tenant-key: ${SCHEDULA_DEFAULT_API_KEY:}
   roles:
     api: true
     scheduler: true
