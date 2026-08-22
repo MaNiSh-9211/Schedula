@@ -4,7 +4,7 @@ A production-grade distributed job scheduler and workflow engine, built delibera
 incrementally. The project optimizes for **correctness, explicit invariants, failure-awareness,
 and measurable behavior** — not feature count or repository size.
 
-**Current status: Phase 0 (Architecture) complete · Phase 1 (single-node scheduler) in progress**
+**Current status: Phases 0–6 complete · Phase 8 core (auth, k8s, dashboards) complete · remaining: RLS/archival export, benchmark numbers on real hardware**
 
 ---
 
@@ -12,12 +12,13 @@ and measurable behavior** — not feature count or repository size.
 
 A platform that accepts, schedules, dispatches, executes, retries, and recovers:
 
-- one-time, immediate, delayed, recurring (fixed-interval now; cron in Phase 5) jobs
-- prioritized and retryable jobs with timeouts and a dead-letter queue
-- DAG workflows with durable state, timers, retries, and compensation (Phase 6)
+- one-time, immediate, delayed, recurring (fixed-interval + cron with timezone/DST) jobs
+- prioritized, retryable, capability/resource-constrained jobs with quotas and backpressure
+- DAG workflows with versioned definitions, durable wait timers, and compensation
 
-...across multiple scheduler nodes and a fleet of workers, surviving crashes, lost
-acknowledgements, network partitions, clock skew, and process pauses.
+...across multiple scheduler nodes (leader-elected, fenced) and a fleet of workers,
+surviving crashes, lost acknowledgements, network partitions, clock skew, and process
+pauses — with an admin UI at `/` for all of it.
 
 ## Core guarantee (stated precisely)
 
@@ -76,25 +77,32 @@ safe via idempotency keys. See [EXECUTION-GUARANTEES.md](docs/EXECUTION-GUARANTE
 
 ---
 
-## Quickstart (Phase 1 preview)
+## Quickstart (with admin UI)
 
-Prereqs: Docker.
+Prereqs: Docker + Java 21 (or just Docker for full compose).
 
 ```bash
 docker compose up -d postgres
-mvn -pl app spring-boot:run        # starts API + scheduler + worker in one process
+mvn -pl app spring-boot:run        # API + scheduler + workers in one process
+# startup log prints the default tenant API key (compose preset: sk_..._devkey123)
 ```
 
-Submit a job:
+Open the **admin UI at http://localhost:8080**, paste the key, and drive everything:
+submit jobs (delays/priorities/caps), create cron schedules, watch retries hit the DLQ,
+replay dead letters, inspect worker fleet, leader/fencing tokens, and run DAG workflows.
+
+CLI alternative:
 
 ```bash
-curl -X POST localhost:8080/v1/jobs -H 'Content-Type: application/json' \
-  -d '{"jobType":"log","payload":{"msg":"hello"},"tenantId":"00000000-0000-0000-0000-000000000001"}'
-
-curl localhost:8080/v1/jobs/<id>   # watch it go QUEUED -> RUNNING -> COMPLETED
+export SCHEDULA_KEY=<key from log>
+./schedula.sh submit log '{"msg":"hello"}'
+./schedula.sh status <jobId>
+./schedula.sh schedulers           # leader + fencing token
+./schedula.sh dlq                  # dead letters
 ```
 
-Metrics: `curl localhost:8080/actuator/prometheus | grep schedula_`
+Metrics: `curl localhost:8080/actuator/prometheus | grep schedula_` ·
+Dashboard JSON in `k8s/grafana-dashboard.json` · Load harness `load/submit-mixed.js`.
 
 ---
 
@@ -102,15 +110,15 @@ Metrics: `curl localhost:8080/actuator/prometheus | grep schedula_`
 
 ```
 Phase 0  Architecture .................. DONE
-Phase 1  Single-node scheduler ......... IN PROGRESS
-Phase 2  Reliable single node .......... not started
-Phase 3  Distributed schedulers ........ not started
-Phase 4  Distributed workers ........... not started
-Phase 5  Advanced scheduling ........... not started
-Phase 6  Workflow engine ............... not started
-Phase 7  Multi-tenancy ................. not started
-Phase 8  Production platform .......... not started
-Phase 9  Scale engineering ............. not started
+Phase 1  Single-node scheduler ......... DONE
+Phase 2  Reliable single node .......... DONE (leases, cancellation, DLQ, audits)
+Phase 3  Distributed schedulers ........ DONE (leader election + fencing)
+Phase 4  Distributed workers ........... DONE (caps, quotas, backpressure, fairness)
+Phase 5  Advanced scheduling ........... DONE (cron+DST, weighted fair dispatch)
+Phase 6  Workflow engine ............... DONE (DAGs, timers, compensation)
+Phase 7  Multi-tenancy ................. CORE DONE (quotas, isolation; RLS/archival export pending)
+Phase 8  Production platform ........... CORE DONE (auth, k8s, UI, CLI, dashboards; Grafana JSON in k8s/)
+Phase 9  Scale engineering ............. harness ready; dedicated-hardware numbers pending
 ```
 
 Full detail with entry/exit criteria: [ROADMAP.md](docs/ROADMAP.md).

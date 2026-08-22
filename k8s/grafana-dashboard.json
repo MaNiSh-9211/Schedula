@@ -1,0 +1,39 @@
+{
+  "title": "Schedula",
+  "uid": "schedula-main",
+  "schemaVersion": 39,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    { "type": "stat", "title": "Queue depth (READY)", "gridPos": {"x":0,"y":0,"w":4,"h":5},
+      "targets": [{ "expr": "max(schedula_queue_depth)" }] },
+    { "type": "stat", "title": "Dead letters", "gridPos": {"x":4,"y":0,"w":4,"h":5},
+      "targets": [{ "expr": "sum(schedula_queue_deadlettered_total)" }] },
+    { "type": "stat", "title": "Jobs submitted", "gridPos": {"x":8,"y":0,"w":4,"h":5},
+      "targets": [{ "expr": "sum(schedula_job_submitted_total)" }] },
+    { "type": "stat", "title": "Leader changes", "gridPos": {"x":12,"y":0,"w":4,"h":5},
+      "targets": [{ "expr": "sum(increase(schedula_leader_changes_total[1h]))" }] },
+    { "type": "timeseries", "title": "Scheduler lag (P50/P95/P99)", "gridPos": {"x":0,"y":6,"w":12,"h":8},
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(schedula_scheduler_lag_bucket[5m])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(schedula_scheduler_lag_bucket[5m])) by (le))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, sum(rate(schedula_scheduler_lag_bucket[5m])) by (le))", "legendFormat": "p99" }
+      ] },
+    { "type": "timeseries", "title": "Job outcomes /s", "gridPos": {"x":12,"y":6,"w":12,"h":8},
+      "targets": [
+        { "expr": "sum(rate(schedula_job_completed_total[1m]))", "legendFormat": "completed" },
+        { "expr": "sum(rate(schedula_job_failed_total[1m]))", "legendFormat": "failed" },
+        { "expr": "sum(rate(schedula_job_retried_total[1m]))", "legendFormat": "retried" },
+        { "expr": "sum(rate(schedula_job_dead_total[1m]))", "legendFormat": "dead" },
+        { "expr": "sum(rate(schedula_job_cancelled_total[1m]))", "legendFormat": "cancelled" }
+      ] },
+    { "type": "timeseries", "title": "Execution duration (P95)", "gridPos": {"x":0,"y":14,"w":12,"h":8},
+      "targets": [{ "expr": "histogram_quantile(0.95, sum(rate(schedula_job_execution_duration_bucket[5m])) by (le))", "legendFormat": "p95" }] },
+    { "type": "timeseries", "title": "Coordination health", "gridPos": {"x":12,"y":14,"w":12,"h":8},
+      "targets": [
+        { "expr": "max(schedula_is_leader)", "legendFormat": "leader (1=one node)" },
+        { "expr": "sum(increase(schedula_fenced_write_rejected_total[5m]))", "legendFormat": "fenced writes rejected" },
+        { "expr": "sum(increase(schedula_lease_expiration_total[5m]) or vector(0))", "legendFormat": "lease expirations" }
+      ] }
+  ]
+}
