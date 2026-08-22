@@ -14,8 +14,8 @@ class NextFireCalculatorTest {
 
     private JobSchedule schedule(long intervalMs, Instant nextFire, JobSchedule.MissedPolicy policy) {
         return new JobSchedule(UUID.randomUUID(), UUID.randomUUID(), "s", "log", "{}",
-                JobSchedule.Kind.FIXED_INTERVAL, intervalMs, "UTC", policy,
-                JobSchedule.State.ACTIVE, nextFire, null, 0, Instant.now());
+                JobSchedule.Kind.FIXED_INTERVAL, intervalMs, null, "UTC", policy,
+                JobSchedule.State.ACTIVE, nextFire, null, 0, 1, Instant.now());
     }
 
     @Test

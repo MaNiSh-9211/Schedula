@@ -103,7 +103,9 @@ public class SchedulerLoop {
     private void tickSchedules(long leadershipToken) {
         Instant now = clock.now();
         for (JobSchedule s : schedules.findDue(now, 50)) {
-            Advance advance = NextFireCalculator.advance(s, now);
+            Advance advance = s.kind() == JobSchedule.Kind.CRON
+                    ? com.schedula.persistence.CronSupport.advance(s, now)
+                    : NextFireCalculator.advance(s, now);
             if (!advance.hasMissed()) continue;
             boolean advanced = schedules.advanceFire(s.id(), s.version(),
                     advance.newNextFireAt(), now, leadershipToken);

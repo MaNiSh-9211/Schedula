@@ -22,7 +22,7 @@ public class SchedulesController {
 
     public record CreateRequest(UUID tenantId, @NotBlank String name, @NotBlank String jobType,
                                 com.fasterxml.jackson.databind.JsonNode payload,
-                                @Positive long intervalMs,
+                                @Positive Long intervalMs, String cronExpr, String timezone,
                                 String missedPolicy) {
     }
 
@@ -34,12 +34,16 @@ public class SchedulesController {
 
     @PostMapping
     org.springframework.http.ResponseEntity<JobSchedule> create(@RequestBody @Valid CreateRequest req) {
+        if ((req.intervalMs() == null || req.intervalMs() <= 0)
+                && (req.cronExpr() == null || req.cronExpr().isBlank())) {
+            throw new IllegalArgumentException("either intervalMs or cronExpr is required");
+        }
         String policy = req.missedPolicy() == null ? "COALESCE" : req.missedPolicy();
         JobSchedule created = schedules.create(new ScheduleStore.Insert(
                 req.tenantId() == null ? JobsController.DEFAULT_TENANT : req.tenantId(),
                 req.name(), req.jobType(),
                 req.payload() == null ? "{}" : req.payload().toString(),
-                req.intervalMs(), policy));
+                req.intervalMs(), req.cronExpr(), req.timezone(), policy));
         return org.springframework.http.ResponseEntity
                 .created(URI.create("/v1/schedules/" + created.id())).body(created);
     }

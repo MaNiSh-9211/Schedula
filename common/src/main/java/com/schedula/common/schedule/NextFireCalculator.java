@@ -4,7 +4,19 @@ import com.schedula.common.model.JobSchedule;
 
 import java.time.Instant;
 
+/**
+ * Pure fixed-interval arithmetic. Cron evaluation lives in
+ * com.schedula.persistence.CronSupport because it relies on Spring's CronExpression
+ * and timezone-aware ZonedDateTime rules.
+ */
 public final class NextFireCalculator {
+
+    /**
+     * Safety valve: during long downtime a tight interval could owe thousands of
+     * occurrences. Beyond this cap counting stops and jumps ahead — degrading toward
+     * COALESCE, which is the safe direction (never explosive).
+     */
+    public static final int MISSED_COUNT_CAP = 10_000;
 
     public record Advance(int missedCount, Instant newNextFireAt) {
         public boolean hasMissed() {
@@ -28,6 +40,9 @@ public final class NextFireCalculator {
         while (!next.isAfter(now)) {
             missed++;
             next = next.plusMillis(interval);
+            if (missed >= MISSED_COUNT_CAP) {
+                return new Advance(missed, next);
+            }
         }
         return switch (schedule.missedPolicy()) {
             case COALESCE, SKIP_TO_LATEST -> new Advance(missed, next);

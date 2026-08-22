@@ -1,6 +1,7 @@
 package com.schedula.persistence;
 
 import com.schedula.common.model.JobSchedule;
+import com.schedula.common.schedule.NextFireCalculator;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
@@ -22,12 +23,14 @@ public class ScheduleStore {
             rs.getString("payload_json"),
             JobSchedule.Kind.valueOf(rs.getString("kind")),
             rs.getObject("interval_ms") == null ? null : rs.getLong("interval_ms"),
+            rs.getString("cron_expr"),
             rs.getString("timezone"),
             JobSchedule.MissedPolicy.valueOf(rs.getString("missed_policy")),
             JobSchedule.State.valueOf(rs.getString("state")),
             Mappers.instant(rs, "next_fire_at"),
             Mappers.instant(rs, "last_enqueued_at"),
             rs.getLong("version"),
+            1,
             Mappers.instant(rs, "created_at"));
 
     private final JdbcTemplate jdbc;
@@ -37,21 +40,32 @@ public class ScheduleStore {
     }
 
     public record Insert(UUID tenantId, String name, String jobType, String payloadJson,
-                         long intervalMs, String missedPolicy) {
+                         Long intervalMs, String cronExpr, String timezone,
+                         String missedPolicy) {
     }
 
     public JobSchedule create(Insert draft) {
         UUID id = com.schedula.common.ids.UuidV7.generate();
-        Instant firstFire = com.schedula.common.schedule.NextFireCalculator
-                .firstFire(draft.intervalMs(), Instant.now());
+        JobSchedule.Kind kind = draft.cronExpr() != null && !draft.cronExpr().isBlank()
+                ? JobSchedule.Kind.CRON : JobSchedule.Kind.FIXED_INTERVAL;
+        String tz = draft.timezone() == null || draft.timezone().isBlank()
+                ? "UTC" : draft.timezone();
+        var probe = new JobSchedule(id, draft.tenantId(), draft.name(), draft.jobType(),
+                "{}", kind, draft.intervalMs(), draft.cronExpr(), tz,
+                JobSchedule.MissedPolicy.COALESCE, JobSchedule.State.ACTIVE,
+                Instant.EPOCH, null, 0, 1, Instant.now());
+        Instant firstFire = kind == JobSchedule.Kind.CRON
+                ? CronSupport.firstFire(probe, Instant.now())
+                : NextFireCalculator.firstFire(draft.intervalMs(), Instant.now());
         jdbc.update("""
                         INSERT INTO job_schedules (id, tenant_id, name, job_type, payload_json,
-                            kind, interval_ms, missed_policy, next_fire_at)
-                        VALUES (?, ?, ?, ?, ?::jsonb, 'FIXED_INTERVAL', ?, ?, ?)
+                            kind, interval_ms, cron_expr, timezone, missed_policy, next_fire_at)
+                        VALUES (?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?)
                         """,
                 id, draft.tenantId(), draft.name(), draft.jobType(),
-                Mappers.canonicalize(draft.payloadJson()), draft.intervalMs(),
-                draft.missedPolicy(), Timestamp.from(firstFire));
+                Mappers.canonicalize(draft.payloadJson()), kind.name(),
+                draft.intervalMs(), draft.cronExpr(), tz, draft.missedPolicy(),
+                Timestamp.from(firstFire));
         return findById(id).orElseThrow();
     }
 
@@ -84,7 +98,7 @@ public class ScheduleStore {
                 """);
         if (leadershipFencingToken != null) {
             sql.append("""
-                    
+
                       AND EXISTS (SELECT 1 FROM scheduler_leases l
                                   WHERE l.resource_name = 'SCHEDULER_LEADER'
                                     AND l.fencing_token = ?
@@ -92,7 +106,7 @@ public class ScheduleStore {
                     """);
         }
         sql.append("""
-                
+
                     RETURNING id
                 )
                 SELECT count(*) FROM moved
