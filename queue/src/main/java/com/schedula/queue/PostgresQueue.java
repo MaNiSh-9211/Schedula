@@ -109,15 +109,16 @@ public class PostgresQueue {
 
     /**
      * Filtered path: candidates are locked first (SKIP LOCKED keeps other workers moving),
-     * then admitted one-by-one against per-type/tenant concurrency caps (counting both
-     * committed RUNNING executions and messages accepted earlier in this same batch) and
-     * this worker's free resource floor. Candidates rejected here stay READY after the
-     * transaction releases their locks and will be retried on a later poll.
+     * then admitted one-by-one in WEIGHTED ROUND ROBIN across tenants (long-run service
+     * share proportional to tenants.weight, small tenants never starve behind large ones),
+     * against per-type/tenant concurrency caps (counting committed RUNNING executions plus
+     * messages accepted earlier in this same batch) and this worker's free resource floor.
+     * Candidates rejected here stay READY after the transaction releases their locks.
      */
     private List<QueueMessage> claimConstrained(UUID workerId, int batch, long visibilityTimeoutMs,
                                                 ClaimFilter filter) {
-        List<UUID> candidates = jdbc.query("""
-                SELECT m2.id FROM queue_messages m2
+        List<QueueMessage> candidates = jdbc.query("""
+                SELECT m2.* FROM queue_messages m2
                 LEFT JOIN jobs j ON j.id = m2.job_id
                 WHERE m2.queue_name = ? AND m2.status = 'READY' AND m2.available_at <= now()
                   AND COALESCE(j.required_capabilities, '{}'::text[])
@@ -126,31 +127,57 @@ public class PostgresQueue {
                 ORDER BY m2.priority DESC, m2.enqueue_seq
                 LIMIT ?
                 FOR UPDATE OF m2 SKIP LOCKED
-                """, (rs, i) -> MappersQ.uuid(rs, "id"), DEFAULT_QUEUE, workerId, workerId, batch * 4);
+                """, MESSAGE, DEFAULT_QUEUE, workerId, workerId, batch * 4);
+
+        // group per tenant, preserving priority order within each tenant
+        var byTenant = new java.util.LinkedHashMap<UUID, java.util.ArrayDeque<QueueMessage>>();
+        for (QueueMessage m : candidates) {
+            byTenant.computeIfAbsent(m.tenantId(), k -> new java.util.ArrayDeque<>()).add(m);
+        }
+        var weights = tenantWeights(byTenant.keySet());
+        var cycle = buildWeightedCycle(byTenant.keySet(), weights);
 
         List<QueueMessage> accepted = new java.util.ArrayList<>(batch);
         int freeCpu = filter.minFreeCpu();
         long freeMem = filter.minFreeMemMb();
         var typeCounts = new java.util.HashMap<String, Integer>();
         var tenantCounts = new java.util.HashMap<UUID, Integer>();
+        int cursor = 0;
 
-        for (UUID id : candidates) {
-            if (accepted.size() >= batch) break;
-            QueueMessage candidate = jdbc.queryForObject(
-                    "SELECT * FROM queue_messages WHERE id = ?", MESSAGE, id);
+        while (accepted.size() < batch && !byTenant.isEmpty() && !cycle.isEmpty()) {
+            if (cursor >= cycle.size()) cursor = 0;
+            UUID tenant = cycle.get(cursor);
+            var queue = byTenant.get(tenant);
+            if (queue == null || queue.isEmpty()) {
+                byTenant.remove(tenant);
+                cycle.remove(cursor);
+                continue;
+            }
+            QueueMessage candidate = queue.poll();
+
             String type = jobTypeOf(candidate);
             String typeKey = type == null ? "" : type;
-
             int runningForType = type.isEmpty() ? 0 : runningCountByType(type);
-            int runningForTenant = runningCountByTenant(candidate.tenantId());
-            int typeAccepted = typeCounts.getOrDefault(typeKey, 0);
-            int tenantAccepted = tenantCounts.getOrDefault(candidate.tenantId(), 0);
+            int runningForTenant = runningCountByTenant(tenant);
 
             var need = type.isEmpty() ? new Reqs(0, 0) : requirementsOf(candidate.jobId());
 
-            if (overTypeCap(typeKey, runningForType + typeAccepted)) continue;
-            if (overTenantCap(candidate.tenantId(), runningForTenant + tenantAccepted)) continue;
-            if (need.cpu() > freeCpu || need.memMb() > freeMem) continue;
+            boolean overCap = overTypeCap(typeKey, runningForType + typeCounts.getOrDefault(typeKey, 0))
+                    || overTenantCap(tenant, runningForTenant + tenantCounts.getOrDefault(tenant, 0));
+            boolean overResources = need.cpu() > freeCpu || need.memMb() > freeMem;
+
+            if (overCap) {
+                // whole type/tenant is saturated this instant; drop its remaining candidates
+                byTenant.remove(tenant);
+                cycle.removeAll(java.util.Collections.nCopies(1, tenant));
+                continue;
+            }
+            if (overResources) {
+                // this worker lacks headroom for THIS message; try its next one later round
+                queue.addFirst(candidate);
+                cursor++;
+                continue;
+            }
 
             List<QueueMessage> one = jdbc.query("""
                     UPDATE queue_messages SET status = 'CLAIMED', claim_owner = ?,
@@ -158,16 +185,42 @@ public class PostgresQueue {
                         deliver_count = deliver_count + 1
                     WHERE id = ? AND status = 'READY'
                     RETURNING *
-                    """, MESSAGE, workerId, (double) visibilityTimeoutMs, id);
+                    """, MESSAGE, workerId, (double) visibilityTimeoutMs, candidate.id());
             if (one.isEmpty()) continue; // lost a race; candidate gone
+
             accepted.add(one.get(0));
             claimsTotal.increment();
             typeCounts.merge(typeKey, 1, Integer::sum);
-            tenantCounts.merge(candidate.tenantId(), 1, Integer::sum);
+            tenantCounts.merge(tenant, 1, Integer::sum);
             freeCpu -= need.cpu();
             freeMem -= need.memMb();
+            cursor++;
         }
         return accepted;
+    }
+
+    private java.util.Map<UUID, Integer> tenantWeights(java.util.Set<UUID> tenants) {
+        var weights = new java.util.HashMap<UUID, Integer>();
+        for (UUID id : tenants) {
+            List<Integer> w = jdbc.query("SELECT weight FROM tenants WHERE id = ?",
+                    (rs, i) -> rs.getInt("weight"), id);
+            weights.put(id, Math.max(1, w.isEmpty() ? 1 : w.get(0)));
+        }
+        return weights;
+    }
+
+    /** Weighted round-robin visit order: a tenant with weight w appears w times per cycle. */
+    private static java.util.List<UUID> buildWeightedCycle(java.util.Set<UUID> tenants,
+                                                           java.util.Map<UUID, Integer> weights) {
+        int max = 1;
+        for (int w : weights.values()) max = Math.max(max, w);
+        var cycle = new java.util.ArrayList<UUID>();
+        for (int phase = max; phase >= 1; phase--) {
+            for (UUID t : tenants) {
+                if (weights.getOrDefault(t, 1) >= phase) cycle.add(t);
+            }
+        }
+        return cycle;
     }
 
     private record Reqs(int cpu, long memMb) {

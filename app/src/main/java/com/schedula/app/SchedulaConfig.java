@@ -26,6 +26,7 @@ public class SchedulaConfig {
     @Bean(destroyMethod = "stop")
     @ConditionalOnProperty(name = "schedula.roles.scheduler", havingValue = "true", matchIfMissing = true)
     public SmartLifecycle schedulerLifecycle(SchedulerLoop loop, RecoveryService recovery,
+                                             com.schedula.engine.RetentionService retention,
                                              com.schedula.coordination.Coordinator coordinator,
                                              Clock clock,
                                              @Value("${schedula.scheduler.poll-interval-ms:250}") long pollMs,
@@ -49,6 +50,8 @@ public class SchedulaConfig {
                     return t;
                 });
                 sweeper.scheduleAtFixedRate(recovery::recover, sweepMs, sweepMs, TimeUnit.MILLISECONDS);
+                sweeper.scheduleAtFixedRate(retention::run,
+                        Math.max(sweepMs, 60_000L), Math.max(sweepMs, 60_000L), TimeUnit.MILLISECONDS);
                 runningFlag = true;
             }
 
