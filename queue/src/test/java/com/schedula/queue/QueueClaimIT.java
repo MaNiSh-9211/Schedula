@@ -49,6 +49,16 @@ class QueueClaimIT {
         return jobId;
     }
 
+    /** Claims are only served to registered HEALTHY workers; tests register real rows. */
+    private static UUID registerWorker() {
+        UUID id = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO workers (id, name, version, max_concurrency, capabilities, status)
+                VALUES (?, 'it-worker', 'test', 8, '{}', 'HEALTHY')
+                """, id);
+        return id;
+    }
+
     @org.junit.jupiter.api.BeforeEach
     void isolateQueue() {
         jdbc.update("TRUNCATE queue_messages");
@@ -65,7 +75,7 @@ class QueueClaimIT {
         ExecutorService pool = Executors.newFixedThreadPool(workers);
         List<Future<List<UUID>>> futures = new ArrayList<>();
         for (int w = 0; w < workers; w++) {
-            UUID workerId = UUID.randomUUID();
+            UUID workerId = registerWorker();
             futures.add(pool.submit((Callable<List<UUID>>) () -> {
                 List<UUID> claimed = new ArrayList<>();
                 for (int round = 0; round < 10; round++) {
@@ -92,7 +102,7 @@ class QueueClaimIT {
     void priorityComesFirstWithinQueue() {
         enqueueOne(0);
         enqueueOne(10);
-        UUID worker = UUID.randomUUID();
+        UUID worker = registerWorker();
         List<QueueMessage> claimed = queue.claim(worker, 1, 60_000);
         assertThat(claimed).hasSize(1);
         assertThat(claimed.get(0).priority()).isEqualTo(10);
@@ -101,7 +111,7 @@ class QueueClaimIT {
     @Test
     void ackOnlyWorksForCurrentOwner() {
         enqueueOne(0);
-        UUID owner = UUID.randomUUID();
+        UUID owner = registerWorker();
         List<QueueMessage> claimed = queue.claim(owner, 1, 60_000);
         UUID messageId = claimed.get(0).id();
         assertThat(queue.ack(messageId, UUID.randomUUID())).isFalse();
@@ -111,14 +121,14 @@ class QueueClaimIT {
     @Test
     void expiredClaimIsReclaimedAndRedelivered() throws Exception {
         enqueueOne(0);
-        UUID owner = UUID.randomUUID();
+        UUID owner = registerWorker();
         List<QueueMessage> first = queue.claim(owner, 1, 1);
         assertThat(first).hasSize(1);
         Thread.sleep(120);
         List<PostgresQueue.Reclaimed> reclaimed = queue.reclaimExpired(5);
         assertThat(reclaimed).hasSize(1);
         assertThat(reclaimed.get(0).deadlettered()).isFalse();
-        List<QueueMessage> redelivered = queue.claim(UUID.randomUUID(), 1, 60_000);
+        List<QueueMessage> redelivered = queue.claim(registerWorker(), 1, 60_000);
         assertThat(redelivered).hasSize(1);
         assertThat(redelivered.get(0).jobId()).isEqualTo(first.get(0).jobId());
         assertThat(redelivered.get(0).deliverCount()).isEqualTo(2);
@@ -128,7 +138,7 @@ class QueueClaimIT {
     void maxDeliveriesSendsToDlq() throws Exception {
         enqueueOne(0);
         for (int delivery = 0; delivery < 5; delivery++) {
-            UUID owner = UUID.randomUUID();
+            UUID owner = registerWorker();
             List<QueueMessage> claimed = queue.claim(owner, 1, 1);
             assertThat(claimed).hasSize(1);
             Thread.sleep(120);
@@ -143,3 +153,6 @@ class QueueClaimIT {
         throw new AssertionError("message never reached DLQ");
     }
 }
+
+
+

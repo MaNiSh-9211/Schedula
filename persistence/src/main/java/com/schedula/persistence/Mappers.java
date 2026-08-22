@@ -33,6 +33,11 @@ final class Mappers {
     static final RowMapper<Job> JOB = (rs, i) -> mapJob(rs);
 
     static Job mapJob(ResultSet rs) throws SQLException {
+        var caps = rs.getArray("required_capabilities");
+        java.util.List<String> required = java.util.List.of();
+        if (caps != null) {
+            required = java.util.List.of((String[]) caps.getArray());
+        }
         return new Job(
                 uuid(rs, "id"),
                 uuid(rs, "tenant_id"),
@@ -49,6 +54,9 @@ final class Mappers {
                 rs.getInt("attempts_made"),
                 instant(rs, "next_attempt_at"),
                 rs.getLong("version"),
+                required,
+                rs.getInt("required_cpu"),
+                rs.getLong("required_mem_mb"),
                 instant(rs, "created_at"),
                 instant(rs, "updated_at"));
     }

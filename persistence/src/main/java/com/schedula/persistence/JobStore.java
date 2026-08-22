@@ -30,7 +30,14 @@ public class JobStore {
 
     public record Insert(UUID tenantId, String jobType, int priority, String payloadJson,
                          Integer maxAttempts, String retryPolicyJson, Long timeoutMs,
-                         Instant scheduledFor, UUID scheduleId, String idempotencyKey) {
+                         Instant scheduledFor, UUID scheduleId, String idempotencyKey,
+                         java.util.List<String> requiredCapabilities, Integer requiredCpu,
+                         Long requiredMemMb) {
+        public Insert {
+            if (requiredCapabilities == null) requiredCapabilities = java.util.List.of();
+            if (requiredCpu == null) requiredCpu = 0;
+            if (requiredMemMb == null) requiredMemMb = 0L;
+        }
     }
 
     public record CreationResult(Job job, boolean fresh) {
@@ -49,13 +56,15 @@ public class JobStore {
             jdbc.update("""
                             INSERT INTO jobs (id, tenant_id, job_type, priority, status, payload_json,
                                 max_attempts, retry_policy_json, timeout_ms, scheduled_for, schedule_id,
-                                idempotency_key)
-                            VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, ?::jsonb, ?, ?, ?, ?)
+                                idempotency_key, required_capabilities, required_cpu, required_mem_mb)
+                            VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?)
                             """,
                     id, draft.tenantId(), draft.jobType(), draft.priority(), initial.name(),
                     Mappers.canonicalize(draft.payloadJson()), maxAttempts,
                     Mappers.canonicalize(draft.retryPolicyJson()), timeoutMs,
-                    ts(scheduledFor), draft.scheduleId(), draft.idempotencyKey());
+                    ts(scheduledFor), draft.scheduleId(), draft.idempotencyKey(),
+                    draft.requiredCapabilities().toArray(new String[0]),
+                    draft.requiredCpu(), draft.requiredMemMb());
             events.append(id, null, EventTypes.JOB_CREATED, "api",
                     "submission", null);
             return new CreationResult(findById(id).orElseThrow(), true);

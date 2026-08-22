@@ -41,7 +41,9 @@ public class JobsController {
                                 com.fasterxml.jackson.databind.JsonNode payload,
                                 Integer priority, Integer maxAttempts,
                                 com.fasterxml.jackson.databind.JsonNode retryPolicy,
-                                Long timeoutMs, Instant scheduledFor) {
+                                Long timeoutMs, Instant scheduledFor,
+                                java.util.List<String> requiredCapabilities,
+                                Integer requiredCpu, Long requiredMemMb) {
     }
 
     private final JobStore jobs;
@@ -49,15 +51,18 @@ public class JobsController {
     private final PostgresQueue queue;
     private final TransactionTemplate tx;
     private final AuditStore audit;
+    private final com.schedula.persistence.QuotaStore quota;
     private final Counter submittedTotal;
 
     public JobsController(JobStore jobs, ExecutionStore executions, PostgresQueue queue,
-                          TransactionTemplate tx, AuditStore audit, MeterRegistry meters) {
+                          TransactionTemplate tx, AuditStore audit,
+                          com.schedula.persistence.QuotaStore quota, MeterRegistry meters) {
         this.jobs = jobs;
         this.executions = executions;
         this.queue = queue;
         this.tx = tx;
         this.audit = audit;
+        this.quota = quota;
         this.submittedTotal = Counter.builder("schedula_job_submitted_total").register(meters);
     }
 
@@ -71,13 +76,15 @@ public class JobsController {
         UUID tenantId = req.tenantId() == null ? DEFAULT_TENANT : req.tenantId();
         String retryPolicyJson = req.retryPolicy() == null ? "{}" : req.retryPolicy().toString();
         RetryPolicy policy = RetryPolicy.fromJson(retryPolicyJson);
+        quota.admissionCheck(tenantId);
         var result = jobs.createReturningFreshness(new JobStore.Insert(
                 tenantId, req.jobType(), req.priority() == null ? 0 : req.priority(),
                 req.payload() == null ? "{}" : req.payload().toString(),
                 req.maxAttempts() == null ? policy.maxAttempts() : req.maxAttempts(),
                 retryPolicyJson,
                 req.timeoutMs() == null ? 60_000L : req.timeoutMs(),
-                req.scheduledFor(), null, idempotencyKey));
+                req.scheduledFor(), null, idempotencyKey,
+                req.requiredCapabilities(), req.requiredCpu(), req.requiredMemMb()));
         if (result.fresh()) {
             submittedTotal.increment();
             return ResponseEntity.created(URI.create("/v1/jobs/" + result.job().id())).body(result.job());
@@ -174,8 +181,10 @@ public class JobsController {
         Job fresh = jobs.create(new JobStore.Insert(
                 old.tenantId(), old.jobType(), old.priority(), old.payloadJson(),
                 old.maxAttempts(), old.retryPolicyJson(), old.timeoutMs(),
-                null, null, old.idempotencyKey() + ":retry:" + UUID.randomUUID()));
+                null, null, old.idempotencyKey() + ":retry:" + UUID.randomUUID(),
+                old.requiredCapabilities(), old.requiredCpu(), old.requiredMemMb()));
         submittedTotal.increment();
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(fresh);
     }
 }
+

@@ -58,7 +58,8 @@ public class DlqController {
                 original.tenantId(), original.jobType(), original.priority(),
                 original.payloadJson(), original.maxAttempts(), original.retryPolicyJson(),
                 original.timeoutMs(), null, null,
-                original.idempotencyKey() + ":dlq-retry:" + UUID.randomUUID()));
+                original.idempotencyKey() + ":dlq-retry:" + UUID.randomUUID(),
+                original.requiredCapabilities(), original.requiredCpu(), original.requiredMemMb()));
         if (!queue.resolveDeadLetter(messageId)) {
             throw new IllegalTransitionException(JobStatus.DEAD, JobStatus.QUEUED);
         }
@@ -82,3 +83,4 @@ public class DlqController {
         return ResponseEntity.noContent().build();
     }
 }
+

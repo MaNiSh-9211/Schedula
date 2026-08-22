@@ -65,6 +65,8 @@ class ReliabilityIT {
                     throw new ClassifiedException(ErrorClass.TRANSIENT, "first attempt fails");
                 }
             });
+            // long-running type used by concurrency-cap scenarios
+            registry.register("slow", new com.schedula.worker.handlers.BuiltInHandlers.SleepHandler());
             return new TestHandlers();
         }
     }
@@ -139,8 +141,9 @@ class ReliabilityIT {
     void expiredClaimIsAbandonedAndRedelivered() {
         // recovery is a leader duty; wait for THIS context's coordinator to win the lease
         Await.until(coordinator::isLeader, b -> b, 15_000);
-        // drive the pipeline manually with roles-independent beans
-        Job job = submit("{\"jobType\":\"sleep\",\"payload\":{\"ms\":100}}");
+        // drive the pipeline manually with roles-independent beans; long enough handler
+        // that the claim can be expired mid-run without finishing first
+        Job job = submit("{\"jobType\":\"sleep\",\"payload\":{\"ms\":1500}}");
         // wait until claimed by the live worker, then simulate a dead claim by expiring it
         Await.until(() -> getJob(job.id()),
                 j -> j.status() == JobStatus.RUNNING || j.status() == JobStatus.COMPLETED, 15_000);

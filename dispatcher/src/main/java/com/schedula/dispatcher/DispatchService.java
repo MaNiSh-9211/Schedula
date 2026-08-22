@@ -50,8 +50,14 @@ public class DispatchService {
     }
 
     public List<Claimed> claimAndDispatch(UUID workerId, int batch, long visibilityTimeoutMs) {
+        return claimAndDispatch(workerId, batch, visibilityTimeoutMs,
+                com.schedula.queue.PostgresQueue.ClaimFilter.unrestricted());
+    }
+
+    public List<Claimed> claimAndDispatch(UUID workerId, int batch, long visibilityTimeoutMs,
+                                          com.schedula.queue.PostgresQueue.ClaimFilter filter) {
         return tx.execute(status -> {
-            List<QueueMessage> messages = queue.claim(workerId, batch, visibilityTimeoutMs);
+            List<QueueMessage> messages = queue.claim(workerId, batch, visibilityTimeoutMs, filter);
             List<Claimed> out = new ArrayList<>(messages.size());
             for (QueueMessage m : messages) {
                 boolean moved = jobs.transition(m.jobId(), Set.of(JobStatus.QUEUED),

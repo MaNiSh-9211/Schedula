@@ -62,27 +62,167 @@ public class PostgresQueue {
                 tenantId, priority, Timestamp.from(availableAt));
     }
 
-    /**
-     * Atomic batch claim. FOR UPDATE SKIP LOCKED means concurrent workers never block each
-     * other; each message goes to exactly one claimer per delivery round.
-     */
-    public List<QueueMessage> claim(UUID workerId, int batch, long visibilityTimeoutMs) {
+    public record ClaimFilter(java.util.List<String> excludeJobTypes,
+                              java.util.List<UUID> excludeTenants,
+                              int minFreeCpu, long minFreeMemMb) {
+        public static ClaimFilter unrestricted() {
+            return new ClaimFilter(java.util.List.of(), java.util.List.of(), 0, 0);
+        }
+    }
+
+    public List<QueueMessage> claim(UUID workerId, int batch, long visibilityTimeoutMs,
+                                    ClaimFilter filter) {
+        boolean unrestricted = filter.excludeJobTypes().isEmpty()
+                && filter.excludeTenants().isEmpty()
+                && filter.minFreeCpu() <= 0 && filter.minFreeMemMb() <= 0;
+        if (unrestricted) {
+            return claimUnrestricted(workerId, batch, visibilityTimeoutMs);
+        }
+        return claimConstrained(workerId, batch, visibilityTimeoutMs, filter);
+    }
+
+    private List<QueueMessage> claimUnrestricted(UUID workerId, int batch, long visibilityTimeoutMs) {
         List<QueueMessage> claimed = jdbc.query("""
-                        UPDATE queue_messages m
-                        SET status = 'CLAIMED', claim_owner = ?, claim_expires_at = now() + (? * interval '1 millisecond'),
-                            deliver_count = deliver_count + 1
-                        WHERE m.id IN (
-                            SELECT id FROM queue_messages
-                            WHERE queue_name = ? AND status = 'READY' AND available_at <= now()
-                            ORDER BY priority DESC, enqueue_seq
-                            LIMIT ?
-                            FOR UPDATE SKIP LOCKED
-                        )
-                        RETURNING m.*
-                        """,
-                MESSAGE, workerId, (double) visibilityTimeoutMs, DEFAULT_QUEUE, batch);
+                UPDATE queue_messages m
+                SET status = 'CLAIMED', claim_owner = ?, claim_expires_at = now() + (? * interval '1 millisecond'),
+                    deliver_count = deliver_count + 1
+                WHERE m.id IN (
+                    SELECT m2.id FROM queue_messages m2
+                    LEFT JOIN jobs j ON j.id = m2.job_id
+                    WHERE m2.queue_name = ? AND m2.status = 'READY' AND m2.available_at <= now()
+                      AND COALESCE(j.required_capabilities, '{}'::text[])
+                            <@ (SELECT capabilities FROM workers WHERE id = ?)
+                      AND COALESCE(j.required_cpu, 0) <= 0
+                      AND COALESCE(j.required_mem_mb, 0) <= 0
+                      AND EXISTS (SELECT 1 FROM workers w
+                                  WHERE w.id = ? AND w.status = 'HEALTHY')
+                    ORDER BY m2.priority DESC, m2.enqueue_seq
+                    LIMIT ?
+                    FOR UPDATE OF m2 SKIP LOCKED
+                )
+                RETURNING m.*
+                """, MESSAGE, workerId, (double) visibilityTimeoutMs, DEFAULT_QUEUE, workerId,
+                workerId, batch);
         claimsTotal.increment(claimed.size());
         return claimed;
+    }
+
+    /**
+     * Filtered path: candidates are locked first (SKIP LOCKED keeps other workers moving),
+     * then admitted one-by-one against per-type/tenant concurrency caps (counting both
+     * committed RUNNING executions and messages accepted earlier in this same batch) and
+     * this worker's free resource floor. Candidates rejected here stay READY after the
+     * transaction releases their locks and will be retried on a later poll.
+     */
+    private List<QueueMessage> claimConstrained(UUID workerId, int batch, long visibilityTimeoutMs,
+                                                ClaimFilter filter) {
+        List<UUID> candidates = jdbc.query("""
+                SELECT m2.id FROM queue_messages m2
+                LEFT JOIN jobs j ON j.id = m2.job_id
+                WHERE m2.queue_name = ? AND m2.status = 'READY' AND m2.available_at <= now()
+                  AND COALESCE(j.required_capabilities, '{}'::text[])
+                        <@ (SELECT capabilities FROM workers WHERE id = ?)
+                  AND EXISTS (SELECT 1 FROM workers w WHERE w.id = ? AND w.status = 'HEALTHY')
+                ORDER BY m2.priority DESC, m2.enqueue_seq
+                LIMIT ?
+                FOR UPDATE OF m2 SKIP LOCKED
+                """, (rs, i) -> MappersQ.uuid(rs, "id"), DEFAULT_QUEUE, workerId, workerId, batch * 4);
+
+        List<QueueMessage> accepted = new java.util.ArrayList<>(batch);
+        int freeCpu = filter.minFreeCpu();
+        long freeMem = filter.minFreeMemMb();
+        var typeCounts = new java.util.HashMap<String, Integer>();
+        var tenantCounts = new java.util.HashMap<UUID, Integer>();
+
+        for (UUID id : candidates) {
+            if (accepted.size() >= batch) break;
+            QueueMessage candidate = jdbc.queryForObject(
+                    "SELECT * FROM queue_messages WHERE id = ?", MESSAGE, id);
+            String type = jobTypeOf(candidate);
+            String typeKey = type == null ? "" : type;
+
+            int runningForType = type.isEmpty() ? 0 : runningCountByType(type);
+            int runningForTenant = runningCountByTenant(candidate.tenantId());
+            int typeAccepted = typeCounts.getOrDefault(typeKey, 0);
+            int tenantAccepted = tenantCounts.getOrDefault(candidate.tenantId(), 0);
+
+            var need = type.isEmpty() ? new Reqs(0, 0) : requirementsOf(candidate.jobId());
+
+            if (overTypeCap(typeKey, runningForType + typeAccepted)) continue;
+            if (overTenantCap(candidate.tenantId(), runningForTenant + tenantAccepted)) continue;
+            if (need.cpu() > freeCpu || need.memMb() > freeMem) continue;
+
+            List<QueueMessage> one = jdbc.query("""
+                    UPDATE queue_messages SET status = 'CLAIMED', claim_owner = ?,
+                        claim_expires_at = now() + (? * interval '1 millisecond'),
+                        deliver_count = deliver_count + 1
+                    WHERE id = ? AND status = 'READY'
+                    RETURNING *
+                    """, MESSAGE, workerId, (double) visibilityTimeoutMs, id);
+            if (one.isEmpty()) continue; // lost a race; candidate gone
+            accepted.add(one.get(0));
+            claimsTotal.increment();
+            typeCounts.merge(typeKey, 1, Integer::sum);
+            tenantCounts.merge(candidate.tenantId(), 1, Integer::sum);
+            freeCpu -= need.cpu();
+            freeMem -= need.memMb();
+        }
+        return accepted;
+    }
+
+    private record Reqs(int cpu, long memMb) {
+    }
+
+    private String jobTypeOf(QueueMessage m) {
+        List<String> t = jdbc.query("SELECT job_type FROM jobs WHERE id = ?",
+                (rs, i) -> rs.getString("job_type"), m.jobId());
+        return t.isEmpty() ? "" : t.get(0);
+    }
+
+    private Reqs requirementsOf(UUID jobId) {
+        try {
+            var row = jdbc.queryForMap(
+                    "SELECT required_cpu, required_mem_mb FROM jobs WHERE id = ?", jobId);
+            return new Reqs(
+                    ((Number) row.get("required_cpu")).intValue(),
+                    ((Number) row.get("required_mem_mb")).longValue());
+        } catch (org.springframework.dao.EmptyResultDataAccessException e) {
+            return new Reqs(0, 0);
+        }
+    }
+
+    private int runningCountByType(String type) {
+        Integer c = jdbc.queryForObject("""
+                SELECT count(*) FROM job_executions e JOIN jobs j ON j.id = e.job_id
+                WHERE e.status = 'RUNNING' AND j.job_type = ?
+                """, Integer.class, type);
+        return c == null ? 0 : c;
+    }
+
+    private int runningCountByTenant(UUID tenantId) {
+        Integer c = jdbc.queryForObject("""
+                SELECT count(*) FROM job_executions e WHERE e.status = 'RUNNING'
+                  AND e.job_id IN (SELECT id FROM jobs WHERE tenant_id = ?)
+                """, Integer.class, tenantId);
+        return c == null ? 0 : c;
+    }
+
+    private boolean overTypeCap(String type, int projected) {
+        List<Integer> caps = jdbc.query(
+                "SELECT max_concurrent FROM job_type_limits WHERE job_type = ?",
+                (rs, i) -> rs.getInt("max_concurrent"), type);
+        return !caps.isEmpty() && projected >= caps.get(0);
+    }
+
+    private boolean overTenantCap(UUID tenantId, int projected) {
+        List<Integer> caps = jdbc.query(
+                "SELECT max_concurrent_executions FROM tenant_quotas WHERE tenant_id = ?",
+                (rs, i) -> rs.getInt("max_concurrent_executions"), tenantId);
+        return !caps.isEmpty() && projected >= caps.get(0);
+    }
+
+    public List<QueueMessage> claim(UUID workerId, int batch, long visibilityTimeoutMs) {
+        return claim(workerId, batch, visibilityTimeoutMs, ClaimFilter.unrestricted());
     }
 
     public boolean ack(UUID messageId, UUID claimOwner) {

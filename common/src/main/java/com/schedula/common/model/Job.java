@@ -21,6 +21,9 @@ public record Job(
         int attemptsMade,
         Instant nextAttemptAt,
         long version,
+        java.util.List<String> requiredCapabilities,
+        int requiredCpu,
+        long requiredMemMb,
         Instant createdAt,
         Instant updatedAt) {
 }

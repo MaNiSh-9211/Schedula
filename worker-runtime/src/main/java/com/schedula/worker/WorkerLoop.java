@@ -49,7 +49,8 @@ public class WorkerLoop {
 
     public record Props(UUID workerId, String name, int concurrency, int batchSize,
                         long pollIntervalMs, long visibilityTimeoutMs,
-                        long heartbeatIntervalMs, long drainDeadlineMs) {
+                        long heartbeatIntervalMs, long drainDeadlineMs,
+                        java.util.List<String> capabilities, int cpuCapacity, long memCapacityMb) {
     }
 
     private final DispatchService dispatcher;
@@ -59,6 +60,7 @@ public class WorkerLoop {
     private final WorkerStore workers;
     private final HandlerRegistry registry;
     private final Clock clock;
+    private final com.schedula.persistence.QuotaStore quotas;
     private final Props props;
     private final RandomGenerator random = RandomGenerator.getDefault();
 
@@ -79,13 +81,16 @@ public class WorkerLoop {
 
     public WorkerLoop(DispatchService dispatcher, ExecutionStore executions, JobStore jobs,
                       PostgresQueue queue, WorkerStore workers, HandlerRegistry registry,
-                      Clock clock, MeterRegistry meters,
+                      Clock clock, com.schedula.persistence.QuotaStore quotas, MeterRegistry meters,
                       @Value("${schedula.worker.concurrency:8}") int concurrency,
                       @Value("${schedula.worker.batch-size:16}") int batchSize,
                       @Value("${schedula.worker.poll-interval-ms:250}") long pollIntervalMs,
                       @Value("${schedula.queue.visibility-timeout-ms:300000}") long visibilityTimeoutMs,
                       @Value("${schedula.worker.heartbeat-interval-ms:5000}") long heartbeatIntervalMs,
-                      @Value("${schedula.worker.drain-deadline-ms:30000}") long drainDeadlineMs) {
+                      @Value("${schedula.worker.drain-deadline-ms:30000}") long drainDeadlineMs,
+                      @Value("${schedula.worker.capabilities:}") String capabilitiesCsv,
+                      @Value("${schedula.worker.cpu-capacity:0}") int cpuCapacity,
+                      @Value("${schedula.worker.mem-capacity-mb:0}") long memCapacityMb) {
         this.dispatcher = dispatcher;
         this.executions = executions;
         this.jobs = jobs;
@@ -93,9 +98,14 @@ public class WorkerLoop {
         this.workers = workers;
         this.registry = registry;
         this.clock = clock;
+        this.quotas = quotas;
+        var capabilities = capabilitiesCsv == null || capabilitiesCsv.isBlank()
+                ? java.util.List.<String>of()
+                : java.util.Arrays.stream(capabilitiesCsv.split(","))
+                        .map(String::trim).filter(s -> !s.isEmpty()).toList();
         this.props = new Props(UUID.randomUUID(), "worker-" + UUID.randomUUID().toString().substring(0, 8),
                 concurrency, batchSize, pollIntervalMs, visibilityTimeoutMs,
-                heartbeatIntervalMs, drainDeadlineMs);
+                heartbeatIntervalMs, drainDeadlineMs, capabilities, cpuCapacity, memCapacityMb);
         this.startedTotal = Counter.builder("schedula_job_started_total").register(meters);
         this.completedTotal = Counter.builder("schedula_job_completed_total").register(meters);
         this.failedTotal = Counter.builder("schedula_job_failed_total").register(meters);
@@ -111,7 +121,8 @@ public class WorkerLoop {
     public synchronized void start() {
         if (running) return;
         running = true;
-        workers.register(props.workerId(), props.name(), "phase1", props.concurrency());
+        workers.register(props.workerId(), props.name(), "phase4", props.concurrency(),
+                props.capabilities(), props.cpuCapacity(), props.memCapacityMb());
         heartbeatPump = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "worker-heartbeat");
             t.setDaemon(true);
@@ -165,9 +176,10 @@ public class WorkerLoop {
                     parkQuietly(25);
                     continue;
                 }
+                var filter = claimFilter();
                 List<Claimed> claimed = dispatcher.claimAndDispatch(
                         props.workerId(), Math.min(props.batchSize(), freeSlots),
-                        props.visibilityTimeoutMs());
+                        props.visibilityTimeoutMs(), filter);
                 if (claimed.isEmpty()) {
                     parkQuietly(pollBackoffMs());
                     continue;
@@ -184,6 +196,19 @@ public class WorkerLoop {
 
     private long pollBackoffMs() {
         return props.pollIntervalMs() + random.nextLong(Math.max(1, props.pollIntervalMs()));
+    }
+
+    /**
+     * Per-poll dispatch constraints: resource floors leave headroom for this worker's own
+     * running jobs; listing configured-limited types/tenants routes the queue into the
+     * constrained claim path, which enforces the caps per accepted message.
+     */
+    private com.schedula.queue.PostgresQueue.ClaimFilter claimFilter() {
+        var free = quotas.freeResources(props.workerId());
+        int cpuFloor = Math.max(0, Math.min(free.cpu(), props.cpuCapacity()));
+        long memFloor = Math.max(0, Math.min(free.memMb(), props.memCapacityMb()));
+        return new PostgresQueue.ClaimFilter(
+                quotas.typesWithLimits(), quotas.tenantsWithQuotas(), cpuFloor, memFloor);
     }
 
     private void runOne(Claimed claimed) {

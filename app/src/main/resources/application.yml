@@ -7,8 +7,12 @@ spring:
     password: ${SCHEDULA_DB_PASSWORD:schedula}
     hikari:
       maximum-pool-size: 10
+      connection-timeout: 20000
+      keepalive-time: 30000
       data-source-properties:
         options: "-c statement_timeout=5000"
+        connectTimeout: 5
+        socketTimeout: 120
   flyway:
     enabled: true
 
@@ -49,6 +53,9 @@ schedula:
     poll-interval-ms: 250
     heartbeat-interval-ms: 5000
     drain-deadline-ms: 30000
+    capabilities: ""
+    cpu-capacity: 0
+    mem-capacity-mb: 0
 
 logging:
   level:
