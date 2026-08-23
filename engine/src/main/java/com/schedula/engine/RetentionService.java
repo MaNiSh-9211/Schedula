@@ -193,5 +193,14 @@ public class RetentionService {
             if (n > 0) deletedAudits.increment(n);
         } while (n >= BATCH);
     }
+
+    /** Remove DEAD workers older than 7 days — they can never come back. */
+    public void purgeStaleWorkers() {
+        if (!coordinator.isLeader()) return;
+        int n = jdbc.update(
+                "DELETE FROM workers WHERE status = 'DEAD' AND last_heartbeat_at < now() - interval '168 hours'");
+        if (n > 0) log.info("purged {} dead worker rows", n);
+    }
 }
+
 

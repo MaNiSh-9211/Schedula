@@ -6,18 +6,42 @@ spring:
     username: ${SCHEDULA_DB_USER:schedula}
     password: ${SCHEDULA_DB_PASSWORD:schedula}
     hikari:
-      maximum-pool-size: 10
+      maximum-pool-size: ${SCHEDULA_DB_POOL_SIZE:10}
+      minimum-idle: 2
       connection-timeout: 20000
       keepalive-time: 30000
       data-source-properties:
         options: "-c statement_timeout=5000"
         connectTimeout: 5
         socketTimeout: 120
+
+---
+spring:
+  config:
+    activate:
+      on-role: scheduler
+  datasource:
+    hikari:
+      maximum-pool-size: 5
+
+---
+spring:
+  config:
+    activate:
+      on-role: worker
+  datasource:
+    hikari:
+      maximum-pool-size: 15
   flyway:
     enabled: true
 
 server:
   port: 8080
+  tomcat:
+    connection-timeout: 10s
+  shutdown: graceful
+
+spring.lifecycle.timeout-per-shutdown-phase: 30s
 
 management:
   endpoints:
@@ -66,3 +90,4 @@ logging:
     com.schedula: INFO
   pattern:
     console: "%d{HH:mm:ss.SSS} %-5level [%thread] [job=%X{job:-} exec=%X{exec:-}] %logger{20}: %msg%n"
+

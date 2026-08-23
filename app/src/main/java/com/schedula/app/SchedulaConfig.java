@@ -2,10 +2,11 @@ package com.schedula.app;
 
 import com.schedula.common.time.Clock;
 import com.schedula.engine.LoopRunner;
+import com.schedula.engine.RecoveryService;
+import com.schedula.engine.RetentionService;
+import com.schedula.engine.SchedulerLoop;
 import com.schedula.persistence.EventStore;
 import com.schedula.persistence.JobStore;
-import com.schedula.engine.RecoveryService;
-import com.schedula.engine.SchedulerLoop;
 import com.schedula.worker.WorkerLoop;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -27,16 +28,20 @@ public class SchedulaConfig {
 
     @Bean(destroyMethod = "stop")
     @ConditionalOnProperty(name = "schedula.roles.scheduler", havingValue = "true", matchIfMissing = true)
-    public SmartLifecycle schedulerLifecycle(SchedulerLoop loop, RecoveryService recovery,
-                                             com.schedula.engine.RetentionService retention,
-                                             com.schedula.coordination.Coordinator coordinator,
-                                             com.schedula.persistence.WorkflowStore workflowStore,
-                                             JobStore jobStore, EventStore eventStore,
-                                             Clock clock, org.springframework.jdbc.core.JdbcTemplate jdbc,
-                                             io.micrometer.core.instrument.MeterRegistry meters,
-                                             @Value("${schedula.scheduler.poll-interval-ms:250}") long pollMs,
-                                             @Value("${schedula.recovery.sweep-interval-ms:5000}") long sweepMs,
-                                             @Value("${schedula.coordinator.probe-interval-ms:1000}") long probeMs) {
+    public SmartLifecycle schedulerLifecycle(
+            SchedulerLoop loop,
+            RecoveryService recovery,
+            RetentionService retention,
+            com.schedula.coordination.Coordinator coordinator,
+            com.schedula.persistence.WorkflowStore workflowStore,
+            JobStore jobStore,
+            EventStore eventStore,
+            Clock clock,
+            org.springframework.jdbc.core.JdbcTemplate jdbc,
+            io.micrometer.core.instrument.MeterRegistry meters,
+            @Value("${schedula.scheduler.poll-interval-ms:250}") long pollMs,
+            @Value("${schedula.recovery.sweep-interval-ms:5000}") long sweepMs,
+            @Value("${schedula.coordinator.probe-interval-ms:1000}") long probeMs) {
         return new SmartLifecycle() {
             private LoopRunner runner;
             private LoopRunner coordinatorRunner;
@@ -61,14 +66,10 @@ public class SchedulaConfig {
                 var webhooks = new com.schedula.engine.WebhookDispatcher(jdbc, coordinator, meters,
                         System.getenv().getOrDefault("SCHEDULA_WEBHOOK_SECRET", "schedula-dev-secret"));
                 sweeper.scheduleAtFixedRate(webhooks::tick, sweepMs, sweepMs, TimeUnit.MILLISECONDS);
-
-                // workflow DAG driver: leader-gated internally; recovers purely from rows
                 var wfDriver = new com.schedula.engine.workflow.WorkflowDriver(
                         workflowStore, jobStore, eventStore, coordinator, clock, meters);
                 wfRunner = new LoopRunner("workflow-driver", pollMs, wfDriver::tick, clock);
                 wfRunner.start();
-
-                // queue-depth gauge: the autoscaling signal (never CPU, see §40)
                 var queueDepth = new java.util.concurrent.atomic.AtomicLong(0);
                 meters.gauge("schedula_queue_depth", queueDepth);
                 sweeper.scheduleAtFixedRate(() -> {
@@ -77,9 +78,7 @@ public class SchedulaConfig {
                                 "SELECT count(*) FROM queue_messages WHERE status = 'READY'",
                                 Long.class);
                         if (d != null) queueDepth.set(d);
-                    } catch (RuntimeException ignored) {
-                        // transient DB unavailability must not kill the sweeper thread
-                    }
+                    } catch (RuntimeException ignored) { }
                 }, sweepMs, sweepMs, TimeUnit.MILLISECONDS);
                 runningFlag = true;
             }
@@ -89,8 +88,10 @@ public class SchedulaConfig {
                 runningFlag = false;
                 if (sweeper != null) sweeper.shutdownNow();
                 if (runner != null) runner.stop();
-                if (coordinatorRunner != null) coordinatorRunner.stop();
                 if (wfRunner != null) wfRunner.stop();
+                if (coordinatorRunner != null) coordinatorRunner.stop();
+                // release leadership proactively for fast rolling deployments
+                coordinator.stepDown();
             }
 
             @Override
