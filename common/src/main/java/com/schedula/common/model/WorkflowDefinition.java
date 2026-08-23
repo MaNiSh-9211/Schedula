@@ -20,6 +20,7 @@ public record WorkflowDefinition(List<TaskSpec> tasks) {
 
     public record TaskSpec(String key, String jobType, JsonNode payload,
                            List<String> dependsOn, Integer maxAttempts, Long waitMs,
+                           String signalName, String childWorkflow, JsonNode childInput,
                            Undo undo) {
     }
 
@@ -34,6 +35,7 @@ public record WorkflowDefinition(List<TaskSpec> tasks) {
             List<TaskSpec> tasks = new ArrayList<>();
             for (JsonNode t : root.path("tasks")) {
                 JsonNode undo = t.path("undo");
+                JsonNode child = t.path("childWorkflow");
                 tasks.add(new TaskSpec(
                         t.path("key").asText(),
                         t.path("jobType").asText(null),
@@ -41,6 +43,10 @@ public record WorkflowDefinition(List<TaskSpec> tasks) {
                         toStringList(t.path("dependsOn")),
                         t.path("maxAttempts").asInt(3),
                         t.hasNonNull("waitMs") ? t.get("waitMs").asLong() : null,
+                        t.hasNonNull("signal") ? t.get("signal").asText() : null,
+                        child.isMissingNode() || !child.has("name") ? null
+                                : child.path("name").asText(),
+                        child.isMissingNode() ? null : child.path("input"),
                         undo.isMissingNode() || !undo.has("jobType") ? null
                                 : new Undo(undo.path("jobType").asText(), undo.path("payload"))));
             }
@@ -67,8 +73,12 @@ public record WorkflowDefinition(List<TaskSpec> tasks) {
                 throw new IllegalArgumentException("duplicate task key " + t.key());
             }
             boolean isWait = t.waitMs() != null;
-            if (!isWait && (t.jobType() == null || t.jobType().isBlank())) {
-                throw new IllegalArgumentException("task " + t.key() + " needs jobType or waitMs");
+            boolean isSignal = t.signalName() != null && !t.signalName().isBlank();
+            boolean isChild = t.childWorkflow() != null && !t.childWorkflow().isBlank();
+            if (!isWait && !isSignal && !isChild
+                    && (t.jobType() == null || t.jobType().isBlank())) {
+                throw new IllegalArgumentException("task " + t.key()
+                        + " needs jobType, waitMs, signal, or childWorkflow");
             }
         }
         for (TaskSpec t : tasks) {
@@ -120,6 +130,12 @@ public record WorkflowDefinition(List<TaskSpec> tasks) {
                 if (t.dependsOn() != null) n.set("dependsOn", JSON.valueToTree(t.dependsOn()));
                 if (t.maxAttempts() != null) n.put("maxAttempts", t.maxAttempts());
                 if (t.waitMs() != null) n.put("waitMs", t.waitMs());
+                if (t.signalName() != null && !t.signalName().isBlank()) n.put("signal", t.signalName());
+                if (t.childWorkflow() != null && !t.childWorkflow().isBlank()) {
+                    var c = n.putObject("childWorkflow");
+                    c.put("name", t.childWorkflow());
+                    if (t.childInput() != null) c.set("input", t.childInput());
+                }
                 if (t.undo() != null) {
                     var u = n.putObject("undo");
                     u.put("jobType", t.undo().jobType());

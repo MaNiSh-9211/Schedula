@@ -24,7 +24,7 @@ public record WorkflowTask(
         Instant startedAt,
         Instant finishedAt) {
 
-    public enum Kind { JOB, WAIT, UNDO }
+    public enum Kind { JOB, WAIT, SIGNAL, CHILD, UNDO }
 
     public enum Status { BLOCKED, RUNNING, SUCCEEDED, FAILED_PERMANENT, SKIPPED, CANCELLED }
 

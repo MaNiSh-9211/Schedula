@@ -47,6 +47,7 @@ public class WorkflowDriver {
     private final EventStore events;
     private final Coordinator coordinator;
     private final Clock clock;
+    private final java.util.Map<UUID, UUID> childExecutions = new java.util.concurrent.ConcurrentHashMap<>();
     private final Counter wfStarted;
     private final Counter wfCompleted;
     private final Counter wfFailed;
@@ -119,7 +120,10 @@ public class WorkflowDriver {
     private void advance(WorkflowExecution exec) {
         List<WorkflowTask> tasks = store.tasksFor(exec.id());
 
-        boolean changed = reconcileFinishedJobs(tasks);
+        // reconcile SIGNAL tasks: consume matching unconsumed signals
+        reconcileSignals(tasks, exec);
+
+        boolean changed = reconcileFinishedJobs(tasks) | reconcileChildWorkflows(tasks);
         if (changed) tasks = store.tasksFor(exec.id());
 
         // failure handling first: FAILING runs compensation before anything else proceeds
@@ -196,6 +200,42 @@ public class WorkflowDriver {
                                 clock.now().plusMillis(t.waitMs() == null ? 0 : t.waitMs()));
                         created = true;
                     }
+                }
+                continue;
+            }
+
+            // SIGNAL task: stays RUNNING until a matching unconsumed signal arrives
+            var specOpt = specOf(exec, t.taskKey());
+            String signalName = specOpt == null ? null : specOpt.signalName();
+            if (signalName != null && !signalName.isBlank()) {
+                if (!depsSatisfied(t, byKey)) continue;
+                if (store.transitionTask(t.id(), WorkflowTask.Status.BLOCKED,
+                        WorkflowTask.Status.RUNNING)) {
+                    store.markSucceededAt(t.id()); // started_at set
+                    created = true;
+                }
+                continue;
+            }
+
+            // CHILD workflow task: start a child execution, stay RUNNING until it completes
+            String childWf = specOpt == null ? null : specOpt.childWorkflow();
+            if (childWf != null && !childWf.isBlank()) {
+                if (!depsSatisfied(t, byKey)) continue;
+                try {
+                    WorkflowExecution child = start(tenantOfTask(t), childWf,
+                            t.payloadJson() == null ? "{}" : t.payloadJson());
+                    if (store.transitionTask(t.id(), WorkflowTask.Status.BLOCKED,
+                            WorkflowTask.Status.RUNNING)) {
+                        log.info("task {} spawned child workflow {}", t.taskKey(), child.id());
+                        childExecutions.put(t.id(), child.id());
+                        created = true;
+                    }
+                } catch (RuntimeException e) {
+                    log.warn("failed to spawn child workflow for task {}: {}", t.taskKey(), e.getMessage());
+                    store.transitionTask(t.id(), WorkflowTask.Status.BLOCKED,
+                            WorkflowTask.Status.FAILED_PERMANENT);
+                    store.markFailed(t.id(), "PERMANENT",
+                            "child workflow spawn failed: " + e.getMessage());
                 }
                 continue;
             }
@@ -347,12 +387,71 @@ public class WorkflowDriver {
         }
     }
 
+    private void reconcileSignals(List<WorkflowTask> tasks, WorkflowExecution exec) {
+        for (WorkflowTask t : tasks) {
+            if (t.kind() != WorkflowTask.Kind.SIGNAL || t.status() != WorkflowTask.Status.RUNNING) continue;
+            var spec = specOf(exec, t.taskKey());
+            String sigName = spec == null || spec.signalName() == null ? t.taskKey() : spec.signalName();
+            var signals = store.unconsumedSignals(t.wfExecutionId(), sigName);
+            if (!signals.isEmpty()) {
+                UUID signalId = (UUID) signals.get(0).get("id");
+                if (store.consumeSignal(signalId)) {
+                    if (store.transitionTask(t.id(), WorkflowTask.Status.RUNNING,
+                            WorkflowTask.Status.SUCCEEDED)) {
+                        store.markSucceededAt(t.id());
+                        log.info("signal '{}' consumed; task {} succeeded", sigName, t.id());
+                    }
+                }
+            }
+        }
+    }
+
+    private boolean reconcileChildWorkflows(List<WorkflowTask> tasks) {
+        boolean changed = false;
+        for (WorkflowTask t : tasks) {
+            if (t.kind() != WorkflowTask.Kind.CHILD || t.status() != WorkflowTask.Status.RUNNING) continue;
+            UUID childExecId = childExecutions.get(t.id());
+            if (childExecId == null) continue;
+            var child = store.findExecById(childExecId);
+            if (child.isPresent() && !child.get().isOpen()) {
+                if (child.get().status() == WorkflowExecution.Status.COMPLETED) {
+                    if (store.transitionTask(t.id(), WorkflowTask.Status.RUNNING,
+                            WorkflowTask.Status.SUCCEEDED)) {
+                        store.markSucceededAt(t.id());
+                        changed = true;
+                    }
+                } else if (child.get().status() == WorkflowExecution.Status.FAILED
+                        || child.get().status() == WorkflowExecution.Status.CANCELLED) {
+                    if (store.transitionTask(t.id(), WorkflowTask.Status.RUNNING,
+                            WorkflowTask.Status.FAILED_PERMANENT)) {
+                        store.markFailed(t.id(), "PERMANENT", "child workflow " + child.get().status());
+                        changed = true;
+                    }
+                }
+                childExecutions.remove(t.id());
+            }
+        }
+        return changed;
+    }
+
+    private com.schedula.common.model.WorkflowDefinition.TaskSpec specOf(
+            WorkflowExecution exec, String taskKey) {
+        try {
+            var def = com.schedula.common.model.WorkflowDefinition.parse(
+                    store.definitionOf(exec.workflowVersionId()).orElse("{}"));
+            return def.tasks().stream()
+                    .filter(s -> s.key().equals(taskKey))
+                    .findFirst().orElse(null);
+        } catch (RuntimeException e) { return null; }
+    }
+
     private UUID tenantOfTask(WorkflowTask t) {
         return store.findExecById(t.wfExecutionId())
                 .map(WorkflowExecution::tenantId)
                 .orElseThrow(() -> new IllegalStateException("orphan task"));
     }
 }
+
 
 
 

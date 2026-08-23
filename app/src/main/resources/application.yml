@@ -52,6 +52,12 @@ management:
     health:
       probes:
         enabled: true
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: ${SCHEDULA_OTLP_ENDPOINT:http://localhost:4318/v1/traces}
 
 schedula:
   auth:

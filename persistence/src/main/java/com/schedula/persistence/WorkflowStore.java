@@ -12,6 +12,7 @@ import org.springframework.stereotype.Repository;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -152,6 +153,11 @@ public class WorkflowStore {
 
     public void insertTasks(UUID execId, WorkflowDefinition def) {
         for (var t : def.tasks()) {
+            String kind;
+            if (t.waitMs() != null) kind = "WAIT";
+            else if (t.signalName() != null && !t.signalName().isBlank()) kind = "SIGNAL";
+            else if (t.childWorkflow() != null && !t.childWorkflow().isBlank()) kind = "CHILD";
+            else kind = "JOB";
             jdbc.update("""
                     INSERT INTO workflow_task_executions
                         (id, wf_execution_id, task_key, kind, status, depends_on, job_type,
@@ -159,7 +165,7 @@ public class WorkflowStore {
                     VALUES (?, ?, ?, ?, 'BLOCKED', ?, ?, ?::jsonb, ?, ?)
                     """,
                     com.schedula.common.ids.UuidV7.generate(), execId, t.key(),
-                    t.waitMs() != null ? "WAIT" : "JOB",
+                    kind,
                     (t.dependsOn() == null
                             ? java.util.Collections.<String>emptyList() : t.dependsOn())
                             .toArray(new String[0]),
@@ -247,6 +253,31 @@ public class WorkflowStore {
         return jdbc.update(
                 "UPDATE workflow_timers SET state = 'FIRED' WHERE id = ? AND state = 'ACTIVE'",
                 timerId) == 1;
+    }
+
+    // --- signals ---------------------------------------------------------------
+
+    public void insertSignal(UUID execId, String signalName, String payloadJson) {
+        jdbc.update("""
+                INSERT INTO workflow_signals (id, wf_execution_id, signal_name, payload_json)
+                VALUES (?, ?, ?, ?::jsonb)
+                """, com.schedula.common.ids.UuidV7.generate(), execId, signalName,
+                payloadJson == null ? "{}" : payloadJson);
+    }
+
+    public List<Map<String, Object>> unconsumedSignals(UUID execId, String signalName) {
+        return jdbc.queryForList("""
+                SELECT id, signal_name, payload_json::text AS payload
+                FROM workflow_signals
+                WHERE wf_execution_id = ? AND signal_name = ? AND consumed = FALSE
+                ORDER BY created_at LIMIT 1
+                """, execId, signalName);
+    }
+
+    public boolean consumeSignal(UUID signalId) {
+        return jdbc.update(
+                "UPDATE workflow_signals SET consumed = TRUE WHERE id = ? AND consumed = FALSE",
+                signalId) == 1;
     }
 
     private static Timestamp ts(Instant i) {

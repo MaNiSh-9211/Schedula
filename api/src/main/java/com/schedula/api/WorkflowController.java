@@ -120,6 +120,18 @@ public class WorkflowController {
         ));
     }
 
+    /** Deliver a signal into a running workflow execution. */
+    @PostMapping("/executions/{id}/signals")
+    ResponseEntity<?> signal(@PathVariable UUID id, @RequestBody Map<String, Object> body) {
+        String name = (String) body.get("signal");
+        if (name == null || name.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("detail", "signal name required"));
+        }
+        store.insertSignal(id, name,
+                writeJson(body.getOrDefault("payload", Map.of())));
+        return ResponseEntity.accepted().body(Map.of("delivered", true));
+    }
+
     /** Cooperative cancel: open tasks' backing jobs get cancelled; DAG stops advancing. */
     @PostMapping("/executions/{id}/cancel")
     ResponseEntity<?> cancel(@PathVariable UUID id) {
