@@ -63,6 +63,9 @@ public class SchedulaConfig {
                 sweeper.scheduleAtFixedRate(recovery::recover, sweepMs, sweepMs, TimeUnit.MILLISECONDS);
                 sweeper.scheduleAtFixedRate(retention::run,
                         Math.max(sweepMs, 60_000L), Math.max(sweepMs, 60_000L), TimeUnit.MILLISECONDS);
+                var predictor = new com.schedula.engine.PressurePredictor(jdbc, meters,
+                        Double.parseDouble(System.getenv().getOrDefault("SCHEDULA_PRESSURE_THRESHOLD", "5000")));
+                sweeper.scheduleAtFixedRate(predictor::sample, sweepMs, sweepMs, TimeUnit.MILLISECONDS);
                 var webhooks = new com.schedula.engine.WebhookDispatcher(jdbc, coordinator, meters,
                         System.getenv().getOrDefault("SCHEDULA_WEBHOOK_SECRET", "schedula-dev-secret"));
                 sweeper.scheduleAtFixedRate(webhooks::tick, sweepMs, sweepMs, TimeUnit.MILLISECONDS);

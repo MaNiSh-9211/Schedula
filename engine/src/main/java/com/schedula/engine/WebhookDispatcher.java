@@ -52,7 +52,16 @@ public class WebhookDispatcher {
         this.failedFinal = Counter.builder("schedula_webhooks_failed_final_total").register(meters);
     }
 
+    // Circuit breaker state
+    private volatile int consecutiveFailures = 0;
+    private volatile long circuitOpenUntil = 0;
+    private static final int CB_THRESHOLD = 5;
+    private static final long CB_COOLDOWN_MS = 60_000;
+
     public void tick() {
+        if (System.currentTimeMillis() < circuitOpenUntil) {
+            return; // circuit OPEN: skip delivery attempts during cooldown
+        }
         boolean leader = coordinator.isLeader();
         if (!leader) return;
         try {
@@ -84,15 +93,23 @@ public class WebhookDispatcher {
                 if (code >= 200 && code < 300) {
                     jdbc.update("UPDATE jobs SET webhook_state='DELIVERED', updated_at=now() WHERE id=?", jobId);
                     delivered.increment();
+                    consecutiveFailures = 0;
                 } else if (attempts + 1 >= MAX_ATTEMPTS) {
                     jdbc.update("""
                             UPDATE jobs SET webhook_state='FAILED', webhook_attempts=webhook_attempts+1,
                                 updated_at=now() WHERE id=?""", jobId);
                     failedFinal.increment();
+                    consecutiveFailures++;
                 } else {
                     jdbc.update("""
                             UPDATE jobs SET webhook_state='PENDING', webhook_attempts=webhook_attempts+1,
                                 updated_at=now() WHERE id=?""", jobId);
+                    consecutiveFailures++;
+                    if (consecutiveFailures >= CB_THRESHOLD) {
+                        circuitOpenUntil = System.currentTimeMillis() + CB_COOLDOWN_MS;
+                        log.warn("webhook circuit OPEN for {}ms after {} consecutive failures",
+                                CB_COOLDOWN_MS, consecutiveFailures);
+                    }
                 }
             }
         } catch (Exception e) {

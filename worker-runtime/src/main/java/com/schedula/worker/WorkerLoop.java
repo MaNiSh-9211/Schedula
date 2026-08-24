@@ -62,6 +62,7 @@ public class WorkerLoop {
     private final HandlerRegistry registry;
     private final Clock clock;
     private final com.schedula.persistence.QuotaStore quotas;
+    private final com.schedula.persistence.RetryOracle retryOracle;
     private final Props props;
     private final RandomGenerator random = RandomGenerator.getDefault();
 
@@ -82,7 +83,8 @@ public class WorkerLoop {
 
     public WorkerLoop(DispatchService dispatcher, ExecutionStore executions, JobStore jobs,
                       PostgresQueue queue, WorkerStore workers, HandlerRegistry registry,
-                      Clock clock, com.schedula.persistence.QuotaStore quotas, MeterRegistry meters,
+                      Clock clock, com.schedula.persistence.QuotaStore quotas,
+                      com.schedula.persistence.RetryOracle retryOracle, MeterRegistry meters,
                       @Value("${schedula.worker.concurrency:8}") int concurrency,
                       @Value("${schedula.worker.batch-size:16}") int batchSize,
                       @Value("${schedula.worker.poll-interval-ms:250}") long pollIntervalMs,
@@ -101,6 +103,7 @@ public class WorkerLoop {
         this.registry = registry;
         this.clock = clock;
         this.quotas = quotas;
+        this.retryOracle = retryOracle;
         var capabilities = capabilitiesCsv == null || capabilitiesCsv.isBlank()
                 ? java.util.List.<String>of()
                 : java.util.Arrays.stream(capabilitiesCsv.split(","))
@@ -447,13 +450,21 @@ public class WorkerLoop {
                 claimed.fencingToken());
         RetryPolicy policy = RetryPolicy.fromJson(job.retryPolicyJson());
         boolean retryable = classified.retryableByDefault();
-        // the job row's max_attempts is authoritative; policy shapes only the delays
         boolean attemptsLeft = job.attemptsMade() < job.maxAttempts();
         if (retryable && attemptsLeft) {
             long delay = DelayCalculator.delayMs(policy, job.attemptsMade() + 1, random);
+            // Adaptive Retry Oracle: override configured backoff when historical data
+            // shows a empirically better delay for this (type, error_class, attempt)
+            var suggestion = retryOracle.suggestDelay(job.jobType(), errorClass,
+                    job.attemptsMade() + 1);
+            if (suggestion.isPresent()) {
+                delay = suggestion.get();
+            }
             boolean moved = jobs.markRetryEligible(job.id(), clock.now().plusMillis(delay),
                     "worker:" + props.workerId(), errorClass + ": " + detail);
             if (moved) {
+                retryOracle.recordFailure(job.jobType(), errorClass,
+                        job.attemptsMade() + 1, delay);
                 queue.nack(claimed.message().id(), props.workerId(), delay);
                 retryScheduledTotal.increment();
                 return;
@@ -492,5 +503,7 @@ public class WorkerLoop {
         return props.workerId();
     }
 }
+
+
 
 

@@ -25,6 +25,11 @@ public class FleetController {
         this.leases = leases;
     }
 
+    @GetMapping("/fingerprints")
+    List<Map<String, Object>> fingerprints() {
+        return jdbc.queryForList("SELECT * FROM job_fingerprints ORDER BY total_24h DESC");
+    }
+
     @GetMapping("/workers")
     List<Map<String, Object>> workers() {
         return jdbc.queryForList("""
