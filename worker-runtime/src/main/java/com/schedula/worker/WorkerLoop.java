@@ -63,6 +63,8 @@ public class WorkerLoop {
     private final Clock clock;
     private final com.schedula.persistence.QuotaStore quotas;
     private final com.schedula.persistence.RetryOracle retryOracle;
+    private final com.schedula.persistence.AnomalyDetector anomalyDetector;
+    private final com.schedula.persistence.AffinityStore affinityStore;
     private final Props props;
     private final RandomGenerator random = RandomGenerator.getDefault();
 
@@ -84,7 +86,10 @@ public class WorkerLoop {
     public WorkerLoop(DispatchService dispatcher, ExecutionStore executions, JobStore jobs,
                       PostgresQueue queue, WorkerStore workers, HandlerRegistry registry,
                       Clock clock, com.schedula.persistence.QuotaStore quotas,
-                      com.schedula.persistence.RetryOracle retryOracle, MeterRegistry meters,
+                      com.schedula.persistence.RetryOracle retryOracle,
+                      com.schedula.persistence.AnomalyDetector anomalyDetector,
+                      com.schedula.persistence.AffinityStore affinityStore,
+                      io.micrometer.core.instrument.MeterRegistry meters,
                       @Value("${schedula.worker.concurrency:8}") int concurrency,
                       @Value("${schedula.worker.batch-size:16}") int batchSize,
                       @Value("${schedula.worker.poll-interval-ms:250}") long pollIntervalMs,
@@ -104,6 +109,8 @@ public class WorkerLoop {
         this.clock = clock;
         this.quotas = quotas;
         this.retryOracle = retryOracle;
+        this.anomalyDetector = anomalyDetector;
+        this.affinityStore = affinityStore;
         var capabilities = capabilitiesCsv == null || capabilitiesCsv.isBlank()
                 ? java.util.List.<String>of()
                 : java.util.Arrays.stream(capabilitiesCsv.split(","))
@@ -503,6 +510,8 @@ public class WorkerLoop {
         return props.workerId();
     }
 }
+
+
 
 
 

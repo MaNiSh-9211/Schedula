@@ -26,6 +26,18 @@ public class SchedulaConfig {
         return Clock.SYSTEM;
     }
 
+    @Bean
+    public com.schedula.persistence.AnomalyDetector anomalyDetector(
+            org.springframework.jdbc.core.JdbcTemplate jdbc) {
+        return new com.schedula.persistence.AnomalyDetector(jdbc, 3.0);
+    }
+
+    @Bean
+    public com.schedula.persistence.AffinityStore affinityStore(
+            org.springframework.jdbc.core.JdbcTemplate jdbc) {
+        return new com.schedula.persistence.AffinityStore(jdbc);
+    }
+
     @Bean(destroyMethod = "stop")
     @ConditionalOnProperty(name = "schedula.roles.scheduler", havingValue = "true", matchIfMissing = true)
     public SmartLifecycle schedulerLifecycle(
@@ -63,17 +75,14 @@ public class SchedulaConfig {
                 sweeper.scheduleAtFixedRate(recovery::recover, sweepMs, sweepMs, TimeUnit.MILLISECONDS);
                 sweeper.scheduleAtFixedRate(retention::run,
                         Math.max(sweepMs, 60_000L), Math.max(sweepMs, 60_000L), TimeUnit.MILLISECONDS);
-                var predictor = new com.schedula.engine.PressurePredictor(jdbc, meters,
-                        Double.parseDouble(System.getenv().getOrDefault("SCHEDULA_PRESSURE_THRESHOLD", "5000")));
-                sweeper.scheduleAtFixedRate(predictor::sample, sweepMs, sweepMs, TimeUnit.MILLISECONDS);
                 var webhooks = new com.schedula.engine.WebhookDispatcher(jdbc, coordinator, meters,
                         System.getenv().getOrDefault("SCHEDULA_WEBHOOK_SECRET", "schedula-dev-secret"));
                 sweeper.scheduleAtFixedRate(webhooks::tick, sweepMs, sweepMs, TimeUnit.MILLISECONDS);
-                var firewall = new com.schedula.engine.CascadeFirewall(jdbc,
-                        Integer.parseInt(System.getenv().getOrDefault("SCHEDULA_FW_THRESHOLD", "10")),
-                        Integer.parseInt(System.getenv().getOrDefault("SCHEDULA_FW_WINDOW_MIN", "5")));
+                var firewall = new com.schedula.engine.CascadeFirewall(jdbc, 10, 5);
                 sweeper.scheduleAtFixedRate(firewall::releaseAllQuarantined,
                         sweepMs * 4, sweepMs * 4, TimeUnit.MILLISECONDS);
+                var predictor = new com.schedula.engine.PressurePredictor(jdbc, meters, 5000);
+                sweeper.scheduleAtFixedRate(predictor::sample, sweepMs, sweepMs, TimeUnit.MILLISECONDS);
                 var wfDriver = new com.schedula.engine.workflow.WorkflowDriver(
                         workflowStore, jobStore, eventStore, coordinator, clock, meters);
                 wfRunner = new LoopRunner("workflow-driver", pollMs, wfDriver::tick, clock);
@@ -98,7 +107,6 @@ public class SchedulaConfig {
                 if (runner != null) runner.stop();
                 if (wfRunner != null) wfRunner.stop();
                 if (coordinatorRunner != null) coordinatorRunner.stop();
-                // release leadership proactively for fast rolling deployments
                 coordinator.stepDown();
             }
 
@@ -116,22 +124,13 @@ public class SchedulaConfig {
             private volatile boolean runningFlag;
 
             @Override
-            public void start() {
-                worker.start();
-                runningFlag = true;
-            }
+            public void start() { worker.start(); runningFlag = true; }
 
             @Override
-            public void stop() {
-                runningFlag = false;
-                worker.stop();
-            }
+            public void stop() { runningFlag = false; worker.stop(); }
 
             @Override
-            public boolean isRunning() {
-                return runningFlag;
-            }
+            public boolean isRunning() { return runningFlag; }
         };
     }
 }
-
