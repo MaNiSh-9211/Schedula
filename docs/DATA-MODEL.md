@@ -187,7 +187,23 @@ timestamp. Append-only; no UPDATE grant in the app DB role. Retention: long, par
 
 ---
 
-## 3. Cross-cutting conventions
+---
+
+## 3. Innovation-Era Tables (V8–V15)
+
+| Table | Purpose | Key columns |
+| --- | --- | --- |
+| `retry_oracle` | Adaptive retry delay learning per (type, error_class, attempt, bucket) | succeeded, failed counts |
+| `job_fingerprints` (view) | Auto-computed P50/P95/P99/success_rate per job_type over 24h | derived, no storage |
+| `dependency_health` | Cascade firewall: tracks failure counts + quarantine state per downstream host | host, failure_count, quarantined |
+| `worker_affinity` | Per-worker success rate + speed per job type for routing decisions | total_runs, total_success, total_duration_ms |
+| `anomaly_baselines` | Welford's online mean/variance per job type for anomaly detection | sample_count, mean_duration_s, m2_duration |
+| `health_profiles` | Historical success rate per (job_type, hour_of_day) for predictive scoring | total_completions, total_failures |
+| `execution_timeline` | Decision audit: every phase transition with context JSONB | phase, actor, decision |
+| `effect_records` | Idempotent effect dedup for handlers (claim-then-run pattern) | tenant_id, job_id, effect_key |
+| `workflow_signals` | External events delivered into running workflow executions | signal_name, consumed |
+
+## 4. Cross-cutting conventions
 
 - **IDs:** UUIDv7 (time-ordered) — index-friendly inserts vs random UUIDv4, still globally unique.
 - **Time:** all timestamps `timestamptz` stored UTC (ADR-008). Durations computed from
@@ -199,8 +215,9 @@ timestamp. Append-only; no UPDATE grant in the app DB role. Retention: long, par
   clause so concurrent actors cannot corrupt state (see CONSISTENCY.md).
 - **Migrations:** Flyway; expand→migrate→contract pattern for rolling deployments (§94).
 
-## 4. Deliberately absent tables (for now)
+## 5. Deliberately absent tables (for now)
 
 `queue_partitions` (needs demonstrated hotspot, §32), `worker_leases` as separate table
 (lease fields live on executions/messages; extract when leases become multi-object),
 `secrets`, `rbac` (Phase 8), archive tables (Phase 8 retention milestone).
+
