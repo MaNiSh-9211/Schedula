@@ -27,6 +27,7 @@ services:
       # fixed dev key so the admin UI is usable immediately (change for real deployments)
       SCHEDULA_DEFAULT_API_KEY: "sk_00000000-0000-0000-0000-000000000001_devkey123"
       SCHEDULA_ADMIN_KEY: "dev-admin-key"
+      SPRING_PROFILES_ACTIVE: demo
     ports:
       - "8080:8080"
 
