@@ -1,132 +1,102 @@
-# Schedula — Distributed Job Scheduling & Workflow Execution Platform
+﻿<div align="center">
 
-A production-grade distributed job scheduler and workflow engine, built deliberately and
-incrementally. The project optimizes for **correctness, explicit invariants, failure-awareness,
-and measurable behavior** — not feature count or repository size.
+# Schedula
 
-**Current status: Phases 0–6 complete · Phase 8 core (auth, k8s, dashboards) complete · remaining: RLS/archival export, benchmark numbers on real hardware**
+**A distributed job scheduler built to survive chaos.**
 
----
+[![Java 21](https://img.shields.io/badge/Java-21-orange)](https://openjdk.java.net/)
+[![Spring Boot 3.5](https://img.shields.io/badge/Spring%20Boot-3.5-green)](https://spring.io/projects/spring-boot)
+[![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16-blue)](https://www.postgresql.org/)
+[![Tests](https://img.shields.io/badge/Tests-84%2F84-brightgreen)()
 
-## What this system is
+[Quick Start](#quick-start) | [Features](#features) | [Architecture](docs/ARCHITECTURE.md) | [API](docs/API.md) | [ADRs](docs/adr)
 
-A platform that accepts, schedules, dispatches, executes, retries, and recovers:
-
-- one-time, immediate, delayed, recurring (fixed-interval + cron with timezone/DST) jobs
-- prioritized, retryable, capability/resource-constrained jobs with quotas and backpressure
-- DAG workflows with versioned definitions, durable wait timers, and compensation
-
-...across multiple scheduler nodes (leader-elected, fenced) and a fleet of workers,
-surviving crashes, lost acknowledgements, network partitions, clock skew, and process
-pauses — with an admin UI at `/` for all of it.
-
-## Core guarantee (stated precisely)
-
-> **At-least-once execution + idempotent effects.**
-
-We do **not** claim exactly-once execution. External side effects cannot be rolled into a
-database transaction; duplicates are possible during crash/ACK-loss windows and must be made
-safe via idempotency keys. See [EXECUTION-GUARANTEES.md](docs/EXECUTION-GUARANTEES.md).
-
-## Engineering rules this repo follows
-
-1. Every architectural decision is recorded as an ADR: the problem, the options considered,
-   why the chosen option wins, and why each alternative was rejected.
-2. No technology is introduced without a documented reason.
-3. No unproven guarantees ("exactly-once", "zero downtime", "linear scaling").
-4. Features are introduced only when their problem becomes real (no day-one sharding,
-   timing wheels, work stealing, or Kafka).
-5. Every subsystem answers: what fails, what races, what duplicates, what goes stale.
+</div>
 
 ---
 
-## Documentation index
-
-| Document | Contents |
-| --- | --- |
-| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Executive overview, component diagram, boundaries, deployment architecture |
-| [DATA-MODEL.md](docs/DATA-MODEL.md) | Tables, keys, indexes, lifecycle, retention |
-| [STATE-MACHINES.md](docs/STATE-MACHINES.md) | Job / workflow / worker / scheduler state machines with transition tables |
-| [COORDINATION.md](docs/COORDINATION.md) | Leader election, leases, fencing tokens |
-| [EXECUTION-GUARANTEES.md](docs/EXECUTION-GUARANTEES.md) | Execution semantics, retry model, queue model, timeouts, cancellation |
-| [FAILURE-MODES.md](docs/FAILURE-MODES.md) | Failure matrix + deep dives on the hard cases |
-| [CONSISTENCY.md](docs/CONSISTENCY.md) | Per-data consistency requirements, isolation levels, concurrency patterns |
-| [MULTI-TENANCY.md](docs/MULTI-TENANCY.md) | Tenancy model, quotas, fair scheduling |
-| [OBSERVABILITY.md](docs/OBSERVABILITY.md) | Metrics, tracing, structured logging, scheduler lag |
-| [SECURITY.md](docs/SECURITY.md) | AuthN/AuthZ, tenant isolation, execution-model security, audit |
-| [API.md](docs/API.md) | REST API proposal |
-| [TECHNOLOGY-CHOICES.md](docs/TECHNOLOGY-CHOICES.md) | Stack decisions, alternatives rejected, major trade-offs |
-| [ROADMAP.md](docs/ROADMAP.md) | Phase 0–9 implementation roadmap with exit criteria |
-| [TESTING.md](docs/TESTING.md) | Test strategy, fault injection, chaos scenarios, load testing |
-| [OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md) | Unresolved architectural questions |
-| [BENCHMARKS.md](docs/BENCHMARKS.md) | Benchmark methodology, dev-laptop observations, known ceilings |
-| [rls-template.sql](docs/rls-template.sql) | Optional Postgres RLS defense-in-depth template (off by default) |
-| [OPERATIONS.md](docs/OPERATIONS.md) | Operator quick reference: run, CLI, signals, failure handling |
-
-### Architecture Decision Records (`docs/adr/`)
-
-| ADR | Decision |
-| --- | --- |
-| [ADR-001](docs/adr/ADR-001-postgresql-as-source-of-truth.md) | PostgreSQL as sole durable store |
-| [ADR-002](docs/adr/ADR-002-at-least-once-execution.md) | At-least-once execution + idempotency keys |
-| [ADR-003](docs/adr/ADR-003-lease-based-ownership.md) | Lease-based ownership for jobs and leadership |
-| [ADR-004](docs/adr/ADR-004-fencing-tokens.md) | Fencing tokens against stale owners |
-| [ADR-005](docs/adr/ADR-005-postgres-leader-election.md) | Leader election via PostgreSQL lease (labeled simplified) |
-| [ADR-006](docs/adr/ADR-006-database-backed-queue.md) | Database-backed queue instead of an external broker (initially) |
-| [ADR-007](docs/adr/ADR-007-java-spring-modular-monolith.md) | Java 21 + Spring modular monolith |
-| [ADR-008](docs/adr/ADR-008-utc-and-injected-clock.md) | UTC storage + injected Clock abstraction |
-| [ADR-009](docs/adr/ADR-009-missed-execution-policy.md) | Missed-execution policy = coalesce to one run (configurable) |
-| [ADR-010](docs/adr/ADR-010-weighted-fair-dispatch.md) | Weighted fair dispatch for multi-tenant fairness |
-
----
-
-## Quickstart (with admin UI)
-
-Prereqs: Docker + Java 21 (or just Docker for full compose).
+## Quick Start
 
 ```bash
+git clone https://github.com/MaNiSh-9211/Schedula.git
+cd Schedula
 docker compose up -d postgres
-mvn -pl app spring-boot:run        # API + scheduler + workers in one process
-# startup log prints the default tenant API key (compose preset: sk_..._devkey123)
+mvn -pl app spring-boot:run
+# open http://localhost:8080 - paste the key from startup log
 ```
 
-Open the **admin UI at http://localhost:8080**, paste the key, and drive everything:
-submit jobs (delays/priorities/caps), create cron schedules, watch retries hit the DLQ,
-replay dead letters, inspect worker fleet, leader/fencing tokens, and run DAG workflows.
+Submit your first job:
+```bash
+curl -X POST localhost:8080/v1/jobs \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: sk_00000000-0000-0000-0000-000000000001_devkey123" \
+  -d '{"jobType":"log","payload":{"msg":"hello world"}}'
+```
 
-CLI alternative:
+## Features
+
+| Category | What it does |
+|----------|-------------|
+| **Scheduling** | Immediate, delayed, cron+DST, fixed-interval, backfill (RUN_ALL), priority with temporal decay |
+| **Execution** | Named queues, worker subscriptions, capability matching, resource-aware (CPU/MEM), virtual threads |
+| **Reliability** | At-least-once delivery, adaptive retry oracle, poison pill detection, DLQ, cascade failure firewall |
+| **Workflows** | DAGs, parallel branches, signals, child workflows, durable timers, compensation |
+| **Coordination** | Leader election (PG lease + fencing tokens), split-brain protection |
+| **Multi-tenancy** | API keys (SHA-256 hashed), per-tenant quotas, rate limits, fair dispatch, audit trail |
+| **Observability** | 30+ Prometheus metrics, anomaly detection (Welford), pressure predictor, health scoring, Grafana dashboard |
+| **Operations** | Admin UI, CLI, k8s manifests, Docker Compose, chaos drills |
+
+## The Inventions
+
+| Innovation | What it does | Why nobody else has it |
+|------------|-------------|----------------------|
+| Adaptive Retry Oracle | Learns optimal retry delays from actual outcomes | Everyone uses static policies |
+| Temporal Decay Priority | Old jobs self-promote, starvation self-heals | Zero config anti-starvation |
+| Cascade Failure Firewall | Auto-quarantines dead dependencies, auto-releases on recovery | Others burn retries into dead services |
+| Statistical Anomaly Detection | Welford online algorithm detects >3-sigma deviations in real-time | Catches slow-but-not-failed jobs |
+| Predictive Health Scoring | Credit score for job executions before dispatch | All schedulers are reactive |
+| Queue Pressure Predictor | Linear regression on depth samples predicts backlog 5 min ahead | Leading indicator vs trailing alarm |
+| Poison Pill Detection | Cross-worker crash patterns flagged automatically | One alert instead of three |
+
+## Architecture
+
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for full details.
+
+```
+Control Plane           Coordination              Data Plane
+-----------             ------------              ----------
+API (/v1/**)            Coordinator               WorkerLoop xN
+ + auth (X-API-Key)      + leader lease            + SKIP LOCKED claims
+ + quotas                + fencing tokens          + lease renewal
+ + validation            + membership              + handler registry
+ + durable submit              |                    + result capture
+                       PostgreSQL <--- all state persists here
+                       (single consistency domain)
+```
+
+## Documentation
+
+| Doc | Contents |
+|-----|----------|
+| [Getting Started](docs/GETTING-STARTED.md) | Step-by-step from zero to production |
+| [Architecture](docs/ARCHITECTURE.md) | Components, diagrams, design decisions |
+| [API Reference](docs/API.md) | All 33 endpoints with examples |
+| [Data Model](docs/DATA-MODEL.md) | Tables, indexes, lifecycle |
+| [State Machines](docs/STATE-MACHINES.md) | Job/workflow/worker/scheduler transitions |
+| [Fault Tolerance Audit](docs/FAULT-TOLERANCE-AUDIT.md) | Honest edge-case assessment vs Temporal/Airflow |
+| [Production Readiness](docs/PRODUCTION-READINESS.md) | Full gap analysis with severity ranking |
+| [Operations Runbook](docs/OPERATIONS.md) | Signals, alerts, failure handling |
+| [Testing Strategy](docs/TESTING.md) | Chaos scenarios, fault injection |
+| [ADR Set](docs/adr/) | 15 architecture decision records |
+
+## Testing
 
 ```bash
-export SCHEDULA_KEY=<key from log>
-./schedula.sh submit log '{"msg":"hello"}'
-./schedula.sh status <jobId>
-./schedula.sh schedulers           # leader + fencing token
-./schedula.sh dlq                  # dead letters
+mvn verify    # requires Docker for Testcontainers
+# 84 tests: 30 unit + 6 cron + 4 election + 5 queue + 34 integration
 ```
 
-Metrics: `curl localhost:8080/actuator/prometheus | grep schedula_` ·
-Dashboard JSON in `k8s/grafana-dashboard.json` · Load harness `load/submit-mixed.js`.
+## License
 
----
+MIT
 
-## Phase plan (summary)
-
-```
-Phase 0  Architecture .................. DONE
-Phase 1  Single-node scheduler ......... DONE
-Phase 2  Reliable single node .......... DONE (leases, cancellation, DLQ, audits)
-Phase 3  Distributed schedulers ........ DONE (leader election + fencing)
-Phase 4  Distributed workers ........... DONE (caps, quotas, backpressure, fairness)
-Phase 5  Advanced scheduling ........... DONE (cron+DST, weighted fair dispatch)
-Phase 6  Workflow engine ............... DONE (DAGs, timers, compensation)
-Phase 7  Multi-tenancy ................. CORE DONE (quotas, isolation; RLS/archival export pending)
-Phase 8  Production platform ........... CORE DONE (auth, k8s, UI, CLI, dashboards; Grafana JSON in k8s/)
-Phase 9  Scale engineering ............. harness ready; dedicated-hardware numbers pending
-```
-
-Full detail with entry/exit criteria: [ROADMAP.md](docs/ROADMAP.md).
-
-Each phase must solve a real problem introduced by the previous phase. The progression is:
-single node → reliable single node → distributed scheduler → distributed workers →
-advanced scheduling → workflow engine → multi-tenant platform → production deployment →
-large-scale system.

@@ -1,65 +1,120 @@
-# API PROPOSAL
+﻿# API Reference
 
-Status: Phase 0 proposal. Covers requirements §55, §88. REST/JSON; resource-oriented;
-idempotency-first. Versioned under `/v1`.
+Base URL: `http://localhost:8080`
+Auth: `X-API-Key` header (tenant scope) or `X-Admin-Key` (platform scope)
 
----
+## Jobs
 
-## Conventions
+### POST /v1/jobs
+Submit a job. Returns 201 Created (or 200 if idempotent replay).
 
-- **Idempotency:** mutating POSTs accept `Idempotency-Key` header (§88). Same key + same
-  request hash ⇒ original response replayed (`200` with `Idempotent-Replay: true`), never a
-  duplicate resource. Key scope: `(tenant, endpoint)`. Conflicting payload under same key ⇒ `409`.
-- **Errors:** RFC7807-style envelope `{type,title,status,detail,instance,errors?}`.
-- **Pagination:** cursor-based (`?limit=50&cursor=...`), cursors opaque+signed.
-- **Async semantics:** submission returns `202` with job id once durably committed — not before.
-- **Time:** all timestamps UTC ISO-8601.
+```json
+{
+  "jobType": "echo",
+  "payload": {"key": "value"},
+  "priority": 0,
+  "maxAttempts": 3,
+  "timeoutMs": 60000,
+  "scheduledFor": "2026-12-25T09:00:00Z",
+  "retryPolicy": {"backoff": "EXPONENTIAL_JITTERED", "initialDelayMs": 1000},
+  "requiredCapabilities": ["python"],
+  "requiredCpu": 2,
+  "requiredMemMb": 512,
+  "queueName": "billing",
+  "webhookUrl": "https://your-app.com/callback"
+}
+```
 
-## Endpoints
+Headers: `Idempotency-Key: <your-key>` for dedup.
 
-### Jobs
+### GET /v1/jobs/{id}
+Returns full job state including attempts, next_retry_at, webhook_state.
 
-| Method & path | Purpose | Notes |
-| --- | --- | --- |
-| `POST /v1/jobs` | Submit job | Body: type, payload, priority?, scheduled_for?, retry_policy?, timeout_ms?, idempotency fields. `202` |
-| `GET /v1/jobs/{id}` | Job + current state | Includes next_attempt_at when RETRY_WAIT |
-| `GET /v1/jobs/{id}/executions` | Attempt history | Ordered by attempt_no |
-| `POST /v1/jobs/{id}/cancel` | Cancel | QUEUED→CANCELLED sync; RUNNING→CANCELLING `202`; terminal→`409` |
-| `POST /v1/jobs/{id}/retry` | Manual retry from FAILED/DEAD | Creates new job linked to original; audited |
-| `POST /v1/jobs/{id}/pause` / `resume` | Pause scheduling | PAUSED state machine |
+### GET /v1/jobs/{id}/executions
+Attempt history with fencing tokens and error details.
 
-### Schedules (recurring/cron)
+### GET /v1/jobs/{id}/events
+Full event timeline (created, queued, started, completed...).
 
-| `POST /v1/schedules` | Create recurring definition | cron expr + timezone + missed_policy |
-| `GET /v1/schedules/{id}` | Inspect incl. next_fire_at | |
-| `DELETE /v1/schedules/{id}` | Stop recurrence | Future occurrences dropped, audited |
+### GET /v1/jobs?status=RUNNING&limit=50&before=<ISO>
+Keyset-paginated listing. Response includes X-Next-Cursor header.
 
-### Workflows
+### POST /v1/jobs/batch
+Bulk submit up to 500 jobs in one transaction.
+Body: `{"jobs": [SubmitRequest...]}`
 
-| `POST /v1/workflows` | Register definition (versioned) | DAG spec validated server-side (cycles, unknown types) |
-| `POST /v1/workflows/{id}/executions` | Start execution | `202`, pinned to a definition version (§56) |
-| `GET /v1/workflow-executions/{id}` | Status + task states | |
-| `POST /v1/workflow-executions/{id}/cancel` | Cooperative cancel | |
+### POST /v1/jobs/{id}/cancel
+Queued/scheduled: sync cancel. Running: cooperative via CANCELLING state.
 
-### DLQ
+### POST /v1/jobs/{id}/pause | /resume | /retry
 
-| `GET /v1/dlq` | List/filter dead letters | Filters: tenant, type, error_class, age |
-| `GET /v1/dlq/{executionId}` | Full detail + events | |
-| `POST /v1/dlq/retry` | Bulk retry | Body: filter or explicit ids; quota-checked; audited |
-| `DELETE /v1/dlq/{executionId}` | Remove | admin only; audited |
+## Schedules
 
-### Fleet & ops
+### POST /v1/schedules
+```json
+{
+  "name": "daily-report",
+  "jobType": "report",
+  "cronExpr": "0 0 9 * * *",
+  "timezone": "Europe/Berlin",
+  "missedPolicy": "COALESCE",
+  "targetWorkflow": null
+}
+```
 
-| `GET /v1/workers` | Registry + health + utilization | |
-| `POST /v1/workers/{id}/drain` | Graceful drain trigger | operator action |
-| `GET /v1/queues` | Depth, age, config | |
-| `GET /v1/schedulers` | Nodes, leader, lease expiry, fencing token | |
-| `GET /v1/tenants/{id}/quotas` (+PUT admin) | Quota management | audited |
-| `GET /metrics` | Prometheus scrape | unauthenticated internal |
+### GET /v1/schedules/{id} | DELETE /v1/schedules/{id}
 
-HTTP status discipline: `202` accepted-async, `409` illegal-state transitions (with machine-
-readable `type`), `422` validation, `429` quota/backpressure (+Retry-After), `409` on
-idempotency conflict. No silent 200s for deferred outcomes.
+## Workflows
 
-CLI (§75) is a thin client over these endpoints in Phase 8 — one API surface, two frontends,
-no divergent behavior.
+### POST /v1/workflows — register definition (versioned)
+```json
+{
+  "name": "order-flow",
+  "definition": {
+    "tasks": [
+      {"key": "validate", "jobType": "log", "payload": {}},
+      {"key": "process", "jobType": "log", "dependsOn": ["validate"],
+        "undo": {"jobType": "log", "payload": {"rollback": true}}},
+      {"key": "wait", "waitMs": 5000, "dependsOn": ["process"]},
+      {"key": "gate", "signal": "approve", "dependsOn": ["wait"]},
+      {"key": "sub", "childWorkflow": {"name": "notify"}, "dependsOn": ["gate"]}
+    ]
+  }
+}
+```
+
+### POST /v1/workflows/{name}/executions — start execution
+### GET /v1/workflows/executions?limit=25 — recent executions
+### GET /v1/workflows/executions/{id} — status + task states
+### POST /v1/workflows/executions/{id}/signals — deliver signal
+### POST /v1/workflows/executions/{id}/cancel — cooperative cancel
+
+## DLQ
+
+| Endpoint | Purpose |
+|----------|---------|
+| GET /v1/dlq | List dead letters |
+| POST /v1/dlq/retry-bulk | Bulk retry by filter |
+| DELETE /v1/dlq/delete-bulk | Bulk delete by filter |
+| POST /v1/dlq/{msgId}/retry | Retry one |
+| DELETE /v1/dlq/{msgId} | Delete one |
+
+## Fleet & Ops
+
+| Endpoint | Purpose |
+|----------|---------|
+| GET /v1/workers | Worker registry + health + utilization |
+| GET /v1/queues | Per-queue depth, claimed, dead-lettered |
+| GET /v1/schedulers | Nodes, leader, fencing token |
+| GET /v1/fingerprints | Job type P50/P95/P99/success rate |
+| GET /v1/health/{type} | Predictive health score (0-100) |
+| GET /v1/timeline/{jobId} | Execution decision timeline |
+
+## Admin (requires X-Admin-Key)
+
+| Endpoint | Purpose |
+|----------|---------|
+| POST /v1/admin/tenants | Create tenant + API key |
+| POST /v1/admin/tenants/{id}/rotate | Rotate key |
+| GET /v1/admin/audits | Audit trail viewer |
+
