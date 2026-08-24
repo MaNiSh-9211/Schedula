@@ -4,11 +4,13 @@ import com.schedula.coordination.Coordinator;
 import com.schedula.coordination.SchedulerLeaseStore;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /** Read-only fleet views for operators and the CLI. */
 @RestController
@@ -18,11 +20,31 @@ public class FleetController {
     private final JdbcTemplate jdbc;
     private final Coordinator coordinator;
     private final SchedulerLeaseStore leases;
+    private final com.schedula.persistence.HealthScorer healthScorer;
 
-    public FleetController(JdbcTemplate jdbc, Coordinator coordinator, SchedulerLeaseStore leases) {
+    public FleetController(JdbcTemplate jdbc, Coordinator coordinator, SchedulerLeaseStore leases,
+                           com.schedula.persistence.HealthScorer healthScorer) {
         this.jdbc = jdbc;
         this.coordinator = coordinator;
         this.leases = leases;
+        this.healthScorer = healthScorer;
+    }
+
+    /** Predictive health score for a job type — before dispatching. */
+    @GetMapping("/health/{jobType}")
+    Map<String, Object> health(@PathVariable String jobType) {
+        var score = healthScorer.compute(jobType, "00000000-0000-0000-0000-000000000001");
+        return Map.of("jobType", jobType, "score", score.value(), "reason", score.reason());
+    }
+
+    /** Full execution timeline: every decision the system made for a job. */
+    @GetMapping("/timeline/{jobId}")
+    List<Map<String, Object>> timeline(@PathVariable UUID jobId) {
+        return jdbc.queryForList("""
+                SELECT phase, actor, decision, context, occurred_at
+                FROM execution_timeline WHERE job_id = ?
+                ORDER BY occurred_at ASC
+                """, jobId);
     }
 
     @GetMapping("/fingerprints")

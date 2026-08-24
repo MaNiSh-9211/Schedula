@@ -65,6 +65,7 @@ public class WorkerLoop {
     private final com.schedula.persistence.RetryOracle retryOracle;
     private final com.schedula.persistence.AnomalyDetector anomalyDetector;
     private final com.schedula.persistence.AffinityStore affinityStore;
+    private final com.schedula.persistence.HealthScorer healthScorer;
     private final Props props;
     private final RandomGenerator random = RandomGenerator.getDefault();
 
@@ -89,6 +90,7 @@ public class WorkerLoop {
                       com.schedula.persistence.RetryOracle retryOracle,
                       com.schedula.persistence.AnomalyDetector anomalyDetector,
                       com.schedula.persistence.AffinityStore affinityStore,
+                      com.schedula.persistence.HealthScorer healthScorer,
                       io.micrometer.core.instrument.MeterRegistry meters,
                       @Value("${schedula.worker.concurrency:8}") int concurrency,
                       @Value("${schedula.worker.batch-size:16}") int batchSize,
@@ -111,6 +113,7 @@ public class WorkerLoop {
         this.retryOracle = retryOracle;
         this.anomalyDetector = anomalyDetector;
         this.affinityStore = affinityStore;
+        this.healthScorer = healthScorer;
         var capabilities = capabilitiesCsv == null || capabilitiesCsv.isBlank()
                 ? java.util.List.<String>of()
                 : java.util.Arrays.stream(capabilitiesCsv.split(","))
@@ -195,6 +198,12 @@ public class WorkerLoop {
                     continue;
                 }
                 var filter = claimFilter();
+                // Predictive Health Gate: don't dispatch into a failing environment
+                var health = healthScorer.compute("system", "default");
+                if (health.value() < 15) {
+                    parkQuietly(pollBackoffMs() * 4);
+                    continue;
+                }
                 List<Claimed> claimed = dispatcher.claimAndDispatch(
                         props.workerId(), Math.min(props.batchSize(), freeSlots),
                         props.visibilityTimeoutMs(), filter);
@@ -510,6 +519,8 @@ public class WorkerLoop {
         return props.workerId();
     }
 }
+
+
 
 
 
