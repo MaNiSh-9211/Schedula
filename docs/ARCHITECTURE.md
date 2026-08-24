@@ -1,201 +1,283 @@
 # Architecture
 
-Schedula follows a **three-plane model**: Control Plane (what should run), Coordination Plane (who decides), and Data Plane (what actually runs). Every component is a Spring-managed bean inside a modular monolith that splits into separate processes via configuration flags.
+Schedula follows a **three-plane model** — Control (what should run), Coordination (who decides), Data (what actually runs) — inside a modular monolith that splits into separate processes via configuration flags.
 
 ```mermaid
 graph TB
-    subgraph "Control Plane"
-        UI[Admin UI :8080]
-        CLI[schedula.sh CLI]
-        GW[API Gateway<br/>external]
-
-        subgraph "API Module"
-            REST[REST /v1/**]
-            AUTH[ApiKeyAuthFilter]
-            SEC[SecurityHeadersFilter]
-            RATE[QuotaStore Rate Limits]
+    subgraph ControlPlane["Control Plane"]
+        UI["Admin UI :8080"]
+        CLI["schedula.sh CLI"]
+        subgraph APIModule["API Module"]
+            AUTH["ApiKeyAuthFilter<br/>X-API-Key / X-Admin-Key"]
+            SEC["SecurityHeadersFilter<br/>CSP · nosniff · DENY"]
+            QUOTA["QuotaStore<br/>backlog + rate limits"]
         end
     end
 
-    subgraph "Coordination Plane"
-        COORD[Coordinator]
-        LEASE[scheduler_leases table]
-        FENCE[fence_counters table]
+    subgraph CoordPlane["Coordination Plane"]
+        COORD["Coordinator<br/>probe → acquire → renew → stepDown"]
+        LEASE["scheduler_leases<br/>(CAS + fencing token)"]
+        NODES["scheduler_nodes<br/>(membership heartbeat)"]
     end
 
-    subgraph "Data Plane"
-        SCHED[SchedulerLoop]
-        DISPATCH[DispatchService]
-        WORKER[WorkerLoop xN]
-        WF[WorkflowDriver]
-        RET[RetentionService]
-        WHD[WebhookDispatcher]
-        FW[CascadeFirewall]
-        PRED[PressurePredictor]
+    subgraph DataPlane["Data Plane"]
+        SCHED["SchedulerLoop<br/>cron · interval · backfill"]
+        DISPATCH["DispatchService<br/>claim → create execution"]
+        WORKER["WorkerLoop ×N<br/>virtual threads per handler"]
+        WFD["WorkflowDriver<br/>DAG reconciliation"]
+        WEBHOOK["WebhookDispatcher<br/>signed · circuit-breaker"]
+        FW["CascadeFirewall<br/>auto-quarantine dead deps"]
+        RET["RetentionService<br/>purge terminal history"]
+        PRED["PressurePredictor<br/>trend detection"]
+        ORACLE["RetryOracle<br/>adaptive delay learning"]
+        ANOM["AnomalyDetector<br/>Welford 3-sigma SPC"]
     end
 
-    subgraph "Persistence"
-        PG[(PostgreSQL 16)]
-        FLY[Flyway Migrations V1-V15]
+    subgraph Store[("PostgreSQL 16")]
+        direction LR
+        T1["jobs"]
+        T2["queue_messages"]
+        T3["workflow_*"]
+        T4["scheduler_leases"]
+        T5["retry_oracle"]
+        T6["audit_events"]
     end
 
-    UI --> REST
-    CLI --> REST
-    GW --> REST
-    REST --> AUTH --> SEC --> RATE
-    RATE --> PG
-    COORD --- LEASE
-    COORD --- FENCE
+    UI --> AUTH
+    CLI --> AUTH
+    AUTH --> QUOTA
+    QUOTA --> PG
+    COORD --> LEASE
+    COORD --> NODES
     SCHED --> PG
     DISPATCH --> PG
     WORKER --> PG
-    WF --> PG
-    RET --> PG
-    WHD --> PG
+    WFD --> PG
+    ORACLE --> PG
+    ANOM --> PG
 ```
-
-## Three-Plane Separation
-
-| Plane | Responsibility | Components | Failure behavior |
-|-------|---------------|------------|------------------|
-| Control | Accept work, validate, persist durably | API module | Returns errors if DB unreachable |
-| Coordination | Decide WHO acts | Coordinator + lease/fence tables | Fail-closed: no leader = no scheduling |
-| Data | Actually do work | WorkerLoop, SchedulerLoop, WorkflowDriver | Retry with backoff, fail-closed |
 
 ---
 
-## Job Lifecycle
+## Job State Machine
 
-Every job follows this state machine. All transitions are **guarded database updates** — two racing writers cannot both succeed.
+Every transition is a **guarded database UPDATE** — the database is the arbiter. Two racing writers cannot both succeed.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> SCHEDULED : submit (durable-before-ack)
-    SCHEDULED --> QUEUED : scheduler tick + enqueue (same tx)
-    QUEUED --> DISPATCHED : SKIP LOCKED claim + execution created
-    DISPATCHED --> RUNNING : worker starts handler
-    RUNNING --> COMPLETED : handler returns (fencing-guarded)
-    RUNNING --> RETRY_WAIT : TRANSIENT/THROTTLED error
-    RETRY_WAIT --> QUEUED : backoff elapsed
-    RUNNING --> DEAD : PERMANENT error or attempts exhausted
-    RETRY_WAIT --> DEAD : max attempts reached
-    RUNNING --> CANCELLING : cooperative cancel requested
-    CANCELLING --> CANCELLED : worker acknowledges
+    [*] --> CREATED : POST /v1/jobs
+
+    CREATED --> SCHEDULED : validation passed
+    CREATED --> REJECTED : validation failed
+
+    SCHEDULED --> QUEUED : scheduler tick (leader-only)
     SCHEDULED --> PAUSED : operator pause
-    QUEUED --> PAUSED : operator pause
-    PAUSED --> SCHEDULED : resume
     SCHEDULED --> CANCELLED : cancel before dispatch
-    QUEUED --> CANCELLED : cancel before dispatch
+
+    QUEUED --> DISPATCHED : SKIP LOCKED claim
+    QUEUED --> PAUSED : operator pause
+    QUEUED --> CANCELLED : cancel before claim
+
+    DISPATCHED --> RUNNING : worker starts handler
+    DISPATCHED --> QUEUED : sweeper requeue (claim expired)
+    DISPATCHED --> DEAD : max deliveries exceeded
+    DISPATCHED --> CANCELLING : cooperative cancel
+
+    RUNNING --> COMPLETED : handler returned successfully
+    RUNNING --> RETRY_WAIT : TRANSIENT/THROTTLED error, attempts remain
+    RUNNING --> DEAD : PERMANENT error or attempts exhausted
+    RUNNING --> FAILED_TERMINAL : non-retryable classification
+    RUNNING --> QUEUED : sweeper redelivery (lease expired)
+    RUNNING --> CANCELLING : cooperative cancel requested
+
+    CANCELLING --> CANCELLED : worker acknowledges cancel
+    CANCELLING --> DEAD : lease expired during cancellation
+
+    RETRY_WAIT --> QUEUED : retry due (next_attempt_at reached)
+    RETRY_WAIT --> DEAD : attempts exhausted during wait
+    RETRY_WAIT --> CANCELLED : cancelled while waiting
+
+    PAUSED --> SCHEDULED : resume
+    PAUSED --> CANCELLED : cancelled while paused
+
     COMPLETED --> [*]
+    FAILED_TERMINAL --> [*]
     DEAD --> [*]
     CANCELLED --> [*]
+    REJECTED --> [*]
 ```
 
 ### Key invariant
 
-> A COMPLETED job can never transition back to RUNNING. Only `POST /retry` creates a NEW job linked to the original.
+> COMPLETED jobs can never execute again. Only `POST /v1/jobs/{id}/retry` creates a NEW job linked to the original by idempotency lineage.
+
+---
+
+## Worker Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> HEALTHY : register(capabilities, queues, cpu, mem)
+
+    HEALTHY --> DRAINING : operator drain or graceful shutdown
+    HEALTHY --> UNHEALTHY : silent > unhealthyAfterMs (15s default)
+    UNHEALTHY --> DEAD : silent > deadAfterMs (60s default)
+    DRAINING --> DEAD : silent > deadAfterMs
+
+    note right of DRAINING
+        Draining workers receive NO new claims.
+        Existing jobs finish or expire naturally.
+    end note
+
+    DEAD --> [*] : purged after 7 days by retention sweeper
+```
 
 ---
 
 ## Distributed Locking (Three Layers)
 
 ```mermaid
-flowchart LR
-    subgraph "Layer 1: Leadership"
-        L1[scheduler_leases row] -->|CAS takeover| L2[One active leader]
-        L1 -->|fencing token per grant| L3[Monotonic counter]
+flowchart TD
+    subgraph L1["Layer 1: Leadership Lock"]
+        A1["scheduler_leases row"] -->|"CAS takeover if expired"| A2["One active leader per cluster"]
+        A1 -->|"fencing_token incremented per grant"| A3["Monotonic counter: token N+1 > token N"]
     end
 
-    subgraph "Layer 2: Execution Ownership"
-        E1[execution.fencing_token] -->|only holder writes outcome| E2[Stale writes = 0 rows]
-        E2 -->|renewal at lease/3| E3[Lease stays alive]
+    subgraph L2["Layer 2: Execution Ownership"]
+        B1["execution.fencing_token"] -->|"only current holder can write outcome"| B2["Stale writes match 0 rows = discarded"]
+        B1 -->|"renewal every lease/3 extends claim + lease"| B3["Ownership stays alive"]
     end
 
-    subgraph "Layer 3: Claim Mutex"
-        Q1[FOR UPDATE SKIP LOCKED] -->|per-message mutex| Q2[N workers, zero double-claims]
+    subgraph L3["Layer 3: Claim Mutex"]
+        C1["FOR UPDATE SKIP LOCKED"] -->|"Postgres row-level mutex"| C2["N workers compete, zero double-claims"]
     end
-```
 
-### How stale owners are neutralized
-
-When a worker loses its lease (GC pause, network partition), a new owner takes over. The old worker's fencing token no longer matches, so every UPDATE it attempts matches zero rows. The stale owner cannot corrupt state even though it still *believes* it owns the job.
-
-```sql
--- This is what a stale worker's write looks like:
-UPDATE job_executions SET status = 'COMPLETED'
-WHERE id = ? AND fencing_token = 42   -- token is stale; new token = 43
--- Result: 0 rows affected. Write is silently discarded.
+    L2 -.->|"if renewal fails, token is stale"| L1
 ```
 
 ---
 
-## Workflow Engine
+## Leader Election Sequence
 
-Workflows are DAGs of tasks. Each task spawns a REAL platform job, inheriting retries, leases, timeouts, and DLQ handling.
+```mermaid
+sequenceDiagram
+    participant A as Node A
+    participant B as Node B
+    participant DB as scheduler_leases
+
+    Note over A,DB: Startup: both nodes register in scheduler_nodes
+
+    A->>DB: CAS acquire (lease missing or expired?)
+    DB-->>A: fencing_token=42, expires_at=now()+15s
+    Note over A: A becomes LEADER (token=42)
+
+    B->>DB: CAS acquire (lease held by A, not expired)
+    DB-->>B: 0 rows → stay FOLLOWER
+
+    Note over A: A crashes (no renewal sent)
+
+    DB->>DB: Lease expires at now+15s
+
+    B->>DB: CAS acquire (expires_at < now ✓)
+    DB-->>B: fencing_token=43 (> 42 ✓)
+    Note over B: B becomes LEADER (token=43)
+
+    A wakes up and tries to renew
+    A->>DB: renew WHERE owner=A AND token=42
+    DB-->>A: 0 rows (owner changed to B) → STEP DOWN
+
+    A attempts fenced write with old token 42
+    A->>DB: UPDATE ... AND EXISTS(token=42 AND not expired)
+    DB-->>A: 0 rows → WRITE INERT (cannot corrupt)
+```
+
+---
+
+## Workflow Engine Execution
 
 ```mermaid
 sequenceDiagram
     participant API
-    participant Driver as WorkflowDriver
-    participant Jobs as Job Store
+    participant Driver as WorkflowDriver (leader only)
+    participant Jobs as Platform Jobs
     participant Worker as WorkerLoop
-    participant DB as PostgreSQL
+    participant Timer as workflow_timers
 
-    API->>DB: Register definition (versioned, immutable)
-    API->>Driver: Start execution
-    Driver->>DB: Insert all tasks as BLOCKED
+    API->>Driver: POST /v1/workflows/{name}/executions
+    Driver->>Driver: Parse definition, validate DAG (no cycles)
+    Driver->>Driver: Insert all tasks as BLOCKED
 
-    loop Every tick until done
-        Driver->>DB: Reconcile finished jobs
-        Driver->>DB: Unblock ready tasks (deps satisfied)
+    loop Every driver tick until all tasks terminal
+        Driver->>Timer: Fire due WAIT timers (ACTIVE → FIRED)
+        Driver->>Driver: Reconcile finished backing jobs
+        Driver->>Driver: Check consumed signals for SIGNAL tasks
+        Driver->>Driver: Check completed child workflows for CHILD tasks
 
-        Note over Driver: Signal task? Stay RUNNING until signal arrives
-        Note over Driver: Wait task? Create durable timer row
-        Note over Driver: Child workflow? Spawn child execution
-        Note over Driver: JOB task? Create platform job
-
-        Driver->>Jobs: Create backing job per unblocked task
-        Worker->>DB: Claim job, execute handler, report result
-        Worker->>DB: Task SUCCEEDED / FAILED
+        loop For each BLOCKED task with satisfied deps
+            alt JOB task
+                Driver->>Jobs: Create platform job (inherits retries/timeouts/DLQ)
+            else WAIT task
+                Driver->>Timer: Insert durable timer row
+            else SIGNAL task
+                Note over Driver: Stays RUNNING until signal consumed
+            else CHILD task
+                Driver->>Driver: Start child workflow execution
+            end
+        end
     end
 
-    Driver->>DB: All tasks terminal → workflow COMPLETED
-```
-
-### Compensation flow
-
-```mermaid
-sequenceDiagram
-    participant Driver
-    participant DB
-
-    Note over Driver: Task 'charge' FAILED_PERMANENT
-    Driver->>DB: Workflow status → FAILING
-    Driver->>DB: Insert UNDO tasks (reverse order) for succeeded tasks
-    loop For each UNDO task
-        Driver->>DB: Create compensation job
-        Worker->>DB: Execute undo → SUCCEEDED
-    end
-    Driver->>DB: All undos done → workflow FAILED compensated=true
+    Driver->>Driver: All tasks SUCCEEDED → workflow COMPLETED
 ```
 
 ---
 
-## Adaptive Retry Oracle
+## Compensation Flow
+
+```mermaid
+sequenceDiagram
+    participant Driver as WorkflowDriver
+    participant Jobs as Platform Jobs
+
+    Note over Driver: Task 'blast' FAILED_PERMANENT
+
+    Driver->>Driver: Workflow status → FAILING
+    Driver->>Driver: For each succeeded task with undo spec (reverse order)
+    Driver->>Jobs: Create compensation job (undo payload wraps original)
+    Jobs->>Jobs: Compensation executes (at-least-once)
+
+    alt All compensations succeed
+        Driver->>Driver: Workflow FAILED compensated=true
+    else Any compensation fails after retries
+        Driver->>Driver: Workflow FAILED compensated=false
+        Note over Driver: Operator must manually resolve
+    end
+```
+
+> **Compensation is NOT rollback.** It is forward-running undo logic whose effects are themselves at-least-once and must be idempotent.
+
+---
+
+## Adaptive Retry Oracle Learning Loop
 
 ```mermaid
 flowchart TD
-    A[Job fails with THROTTLED] --> B{Oracle has ≥5 samples?}
-    B -- Yes --> C[Use empirically best delay bucket]
+    A[Job attempt fails with error_class E] --> B{Oracle has ≥5 samples for this type+class+attempt?}
+    B -- Yes --> C[Use empirically optimal delay bucket]
     B -- No --> D[Use configured exponential backoff]
-    C --> E[Nack message with delay]
+
+    C --> E[Nack message: available_at = now + delay]
     D --> E
+
     E --> F[Message becomes READY after delay]
-    F --> G[Worker claims retry attempt]
-    G --> H{Succeeded?}
-    H -- Yes --> I[Record SUCCESS in bucket]
-    H -- No --> J[Record FAILURE in bucket]
-    J --> A
+    F --> G[Worker claims and executes retry]
+    G --> H{Attempt succeeded?}
+
+    H -- Yes --> I["Oracle.record(type, E, attempt, delay, SUCCESS)"]
+    H -- No --> J["Oracle.record(type, E, attempt, delay, FAILURE)"]
+
+    I --> K[Oracle learns: this bucket works]
+    J --> L[Oracle learns: this bucket doesn't work]
+    L --> M{Next retry: pick different bucket}
 ```
 
 ---
@@ -204,46 +286,95 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[Job fails] --> B{Extract host from error}
-    B -->|found| C[Increment failure_count for host]
-    C --> D{count >= 10 in 5min?}
-    D -- Yes --> E[QUARANTINE: cancel all READY messages targeting host]
-    D -- No --> F[Normal retry path]
-
-    E --> G[Sweeper TCP-checks host every 20s]
-    G --> H{Reachable?}
-    H -- Yes --> I[Release quarantined jobs to READY]
+    A[Job execution fails] --> B{Extract hostname from error_detail}
+    B -->|found| C["dependency_health.failure_count += 1"]
+    C --> D{count ≥ threshold within window?}
+    D -- Yes --> E{Already quarantined?}
+    E -- No --> F[🔥 QUARANTINE: cancel all READY messages targeting host]
+    F --> G[Sweeper TCP-checks host every sweepMs×4]
+    E -- Yes --> G
+    G --> H{Host reachable?}
+    H -- Yes --> I[Release quarantined messages to READY]
     H -- No --> G
 ```
 
 ---
 
-## Leader Election
+## Webhook Circuit Breaker
+
+```mel
+stateDiagram-v2
+    [*] --> CLOSED : webhook registered on job
+
+    CLOSED --> OPEN : 5 consecutive delivery failures
+    OPEN --> HALF_OPEN : cooldown expires (60s)
+    HALF_OPEN --> CLOSED : next delivery succeeds
+    HALF_OPEN --> OPEN : next delivery fails
+```
+
+---
+
+## Predictive Health Scoring Gate
 
 ```mermaid
-sequenceDiagram
-    participant F1 as Node A (Follower)
-    participant F2 as Node B (Follower)
-    participant DB as scheduler_leases table
+flowchart TD
+    A[WorkerLoop poll cycle] --> B{Health score ≥ 15?}
+    B -- No --> C[Park 4× longer than normal backoff]
+    C --> A
+    B -- Yes --> D[Claim batch via dispatcher]
 
-    F1->>DB: CAS: acquire if expired or mine
-    DB-->>F1: Token=42, expires in 15s
-    Note over F1: A is LEADER with fence token 42
+    subgraph "Score factors"
+        F1["Historical success rate (±30)"]
+        F2["Queue pressure (−20 max)"]
+        F3["Error velocity (−25 max)"]
+        F4["Worker pool health (+15)"]
+    end
 
-    F2->>DB: CAS: acquire (lease held by A, not expired)
-    DB-->>F2: 0 rows → stay FOLLOWER
+    subgraph "Score ranges"
+        S1["80-100: excellent → normal claiming"]
+        S2["50-79: normal → normal claiming"]
+        S3["15-49: degraded → reduced claiming"]
+        S4["0-14: critical → worker backs off"]
+    end
+```
 
-    A crashes (no renewal)
+---
 
-    DB->>DB: Lease expires after 15s
-    F2->>DB: CAS: acquire (expired!)
-    DB-->>F2: Token=43 (> 42), expires in 15s
-    Note over F2: B is LEADER with fence token 43
+## Module Dependency Graph
 
-    A wakes up, tries to renew token 42
-    DB-->>A: 0 rows → STEP DOWN
-    A tries fenced write with token 42
-    DB-->>A: 0 rows → WRITE REJECTED
+```mermaid
+graph TD
+    APP["app<br/>(bootable assembly)"]
+
+    APP --> API["api<br/>(REST controllers, auth filters)"]
+    APP --> ENGINE["engine<br/>(scheduler, recovery, webhooks, oracle)"]
+    APP --> WR["worker-runtime<br/>(handler loop, affinity)"]
+    APP --> DISP["dispatcher<br/>(claim-and-dispatch)"]
+
+    API --> PERS["persistence<br/>(stores, Flyway migrations)"]
+    API --> QUEUE["queue<br/>(PostgresQueue: claim/ack/nack/DLQ)"]
+    API --> COORD["coordination<br/>(leader election, fencing)"]
+
+    ENGINE --> PERS
+    ENGINE --> COORD
+    ENGINE --> QUEUE
+
+    DISP --> PERS
+    DISP --> QUEUE
+
+    WR --> DISP
+    WR --> PERS
+    WR --> QUEUE
+
+    PERS --> COMMON["common<br/>(models, state machines, retry math)"]
+    COORD --> COMMON
+    QUEUE --> COMMON
+
+    subgraph "External Dependencies"
+        SPRING["Spring Boot 3.5"]
+        PG["PostgreSQL 16"]
+        MICROMETER["Micrometer + OTel"]
+    end
 ```
 
 ---
@@ -252,36 +383,18 @@ sequenceDiagram
 
 ### Development (single JVM)
 
-```
-java -jar app.jar --schedula.roles.api=true --schedula.roles.scheduler=true --schedula.roles.worker=true
-```
-
-### Production (Kubernetes)
+All roles in one process. Demo profile seeds sample data.
 
 ```
-API Deployment (2 replicas)          ← readiness: /actuator/health/readiness
-Scheduler Deployment (3 replicas)    ← leader-elected, PDB minAvailable=1
-Worker Deployment (HPA-scaled)       ← subscribed_queues, capabilities, PDB
-PostgreSQL StatefulSet or RDS        ← streaming replication recommended
-Grafana + Prometheus                 ← dashboard JSON + alert rules included
-OTel Collector                       ← OTLP traces endpoint
+java -jar app.jar --spring.profiles.active=demo
 ```
 
----
+### Production (Kubernetes, 3 roles split)
 
-## Module Dependency Graph
+| Component | Replicas | Scaling | Notes |
+|-----------|----------|---------|-------|
+| API | 2 | manual | Stateless behind load balancer |
+| Scheduler | 3 | fixed | Leader-elected via PG lease; only leader acts |
+| Workers | 3→HPA | queue-depth gauge | Subscribed to named queues; capability-matched |
 
-```
-app ──→ api ──→ persistence ──→ common
- │                │
- ├──→ engine ──→ coordination
- │         │         │
- │         ▼         │
- ├──→ worker-runtime
- │         │
- └──→ dispatcher ──→ queue
-                      │
-                      └──→ persistence
-```
-
-Each module has a single responsibility. Boundaries are enforced by Maven module scoping.
+Graceful shutdown: SIGTERM → stop claiming → finish inflight (≤30s) → release leadership → deregister → exit.
