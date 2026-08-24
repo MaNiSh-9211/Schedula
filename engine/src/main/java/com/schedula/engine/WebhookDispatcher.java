@@ -55,7 +55,6 @@ public class WebhookDispatcher {
     public void tick() {
         boolean leader = coordinator.isLeader();
         if (!leader) return;
-        System.out.println("[webhook-debug] isLeader=true, querying...");
         try {
             List<Map<String, Object>> due = jdbc.queryForList("""
                 SELECT id, tenant_id, job_type, status,
@@ -69,7 +68,6 @@ public class WebhookDispatcher {
                   AND updated_at < now() - interval '5 seconds'
                 LIMIT 25
                 """);
-            System.out.println("[webhook-debug] due=" + due.size());
             for (Map<String, Object> row : due) {
                 UUID jobId = (UUID) row.get("id");
                 String url = (String) row.get("webhook_url");
@@ -83,7 +81,6 @@ public class WebhookDispatcher {
                         .POST(HttpRequest.BodyPublishers.ofString(body))
                         .build();
                 int code = http.send(req, HttpResponse.BodyHandlers.ofString()).statusCode();
-                System.out.println("[webhook-debug] delivered to " + url + " -> " + code);
                 if (code >= 200 && code < 300) {
                     jdbc.update("UPDATE jobs SET webhook_state='DELIVERED', updated_at=now() WHERE id=?", jobId);
                     delivered.increment();
@@ -99,7 +96,6 @@ public class WebhookDispatcher {
                 }
             }
         } catch (Exception e) {
-            System.out.println("[webhook-debug] ERROR: " + e);
             log.warn("webhook dispatch error: {}", e.toString());
         }
     }
@@ -127,6 +123,7 @@ public class WebhookDispatcher {
         }
     }
 }
+
 
 
 
