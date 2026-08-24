@@ -1,253 +1,287 @@
-# ARCHITECTURE
+# Architecture
 
-Status: Phase 0 proposal. Covers requirements §1–§6, §64, §83.
+Schedula follows a **three-plane model**: Control Plane (what should run), Coordination Plane (who decides), and Data Plane (what actually runs). Every component is a Spring-managed bean inside a modular monolith that splits into separate processes via configuration flags.
+
+```mermaid
+graph TB
+    subgraph "Control Plane"
+        UI[Admin UI :8080]
+        CLI[schedula.sh CLI]
+        GW[API Gateway<br/>external]
+
+        subgraph "API Module"
+            REST[REST /v1/**]
+            AUTH[ApiKeyAuthFilter]
+            SEC[SecurityHeadersFilter]
+            RATE[QuotaStore Rate Limits]
+        end
+    end
+
+    subgraph "Coordination Plane"
+        COORD[Coordinator]
+        LEASE[scheduler_leases table]
+        FENCE[fence_counters table]
+    end
+
+    subgraph "Data Plane"
+        SCHED[SchedulerLoop]
+        DISPATCH[DispatchService]
+        WORKER[WorkerLoop xN]
+        WF[WorkflowDriver]
+        RET[RetentionService]
+        WHD[WebhookDispatcher]
+        FW[CascadeFirewall]
+        PRED[PressurePredictor]
+    end
+
+    subgraph "Persistence"
+        PG[(PostgreSQL 16)]
+        FLY[Flyway Migrations V1-V15]
+    end
+
+    UI --> REST
+    CLI --> REST
+    GW --> REST
+    REST --> AUTH --> SEC --> RATE
+    RATE --> PG
+    COORD --- LEASE
+    COORD --- FENCE
+    SCHED --> PG
+    DISPATCH --> PG
+    WORKER --> PG
+    WF --> PG
+    RET --> PG
+    WHD --> PG
+```
+
+## Three-Plane Separation
+
+| Plane | Responsibility | Components | Failure behavior |
+|-------|---------------|------------|------------------|
+| Control | Accept work, validate, persist durably | API module | Returns errors if DB unreachable |
+| Coordination | Decide WHO acts | Coordinator + lease/fence tables | Fail-closed: no leader = no scheduling |
+| Data | Actually do work | WorkerLoop, SchedulerLoop, WorkflowDriver | Retry with backoff, fail-closed |
 
 ---
 
-## 1. Executive overview
+## Job Lifecycle
 
-The platform is a **distributed job scheduling and workflow execution system** with three
-planes kept conceptually separate (§83):
+Every job follows this state machine. All transitions are **guarded database updates** — two racing writers cannot both succeed.
 
-- **Control plane** — accepts work (jobs, workflows), owns definitions and desired state.
-  Answering "what should exist and when should it run?"
-- **Coordination plane** — decides *who* is allowed to act (leader election, leases,
-  fencing). Answering "who owns this decision right now?"
-- **Data plane** — actually executes work (queues, workers). Answering "run this now,
-  report back, survive failure."
+```mermaid
+stateDiagram-v2
+    [*] --> SCHEDULED : submit (durable-before-ack)
+    SCHEDULED --> QUEUED : scheduler tick + enqueue (same tx)
+    QUEUED --> DISPATCHED : SKIP LOCKED claim + execution created
+    DISPATCHED --> RUNNING : worker starts handler
+    RUNNING --> COMPLETED : handler returns (fencing-guarded)
+    RUNNING --> RETRY_WAIT : TRANSIENT/THROTTLED error
+    RETRY_WAIT --> QUEUED : backoff elapsed
+    RUNNING --> DEAD : PERMANENT error or attempts exhausted
+    RETRY_WAIT --> DEAD : max attempts reached
+    RUNNING --> CANCELLING : cooperative cancel requested
+    CANCELLING --> CANCELLED : worker acknowledges
+    SCHEDULED --> PAUSED : operator pause
+    QUEUED --> PAUSED : operator pause
+    PAUSED --> SCHEDULED : resume
+    SCHEDULED --> CANCELLED : cancel before dispatch
+    QUEUED --> CANCELLED : cancel before dispatch
+    COMPLETED --> [*]
+    DEAD --> [*]
+    CANCELLED --> [*]
+```
 
-### Design goals (in priority order)
+### Key invariant
 
-1. **No lost work.** A submitted, acknowledged job is never silently dropped. It either
-   executes or lands in a visible failed/dead state with an audit trail.
-2. **Bounded duplicate execution.** At-least-once delivery means duplicates are possible;
-   the window is bounded by lease duration and every effect is made idempotency-safe.
-3. **No stale-owner corruption.** A partitioned or paused scheduler/worker can never
-   overwrite the decisions of its successor (fencing tokens).
-4. **Explainability.** For any job, the system can answer "why is it in this state?" from
-   persisted events — without attaching a debugger.
-5. **Horizontal scaling of the data plane.** Workers scale out linearly until the database
-   becomes the bottleneck; the bottleneck is measured, documented, and has an escape path.
-
-### Non-goals (explicitly)
-
-- Exactly-once execution of arbitrary side effects (impossible in general; see ADR-002).
-- Sub-millisecond scheduling latency. This is a durable scheduler, not a low-latency
-  trading system. Target: P99 scheduler lag in the low hundreds of milliseconds at moderate load.
-- Multi-region active-active in early phases (open question #7).
-- A general-purpose compute platform (Kubernetes-native job execution is a later, optional mode).
-
-### Scale targets (initial, to be validated by benchmarks — §48, §76)
-
-| Dimension | Initial target |
-| --- | --- |
-| Job submission throughput | 1,000/sec sustained per API node |
-| Dispatch throughput | 1,000–5,000/sec per scheduler node (Postgres-bound; benchmark will pin this) |
-| Scheduled (future) jobs | 1M rows with stable poll cost via indexes |
-| Concurrent workers | 100+ |
-| Tenants | 100+ with fairness enforced |
-| Scheduler failover time | < lease duration (default 15s), bounded, tested |
-
-These are hypotheses until Phase 9 benchmarks exist. Nothing in the docs claims more than
-that.
+> A COMPLETED job can never transition back to RUNNING. Only `POST /retry` creates a NEW job linked to the original.
 
 ---
 
-## 2. Component diagram
+## Distributed Locking (Three Layers)
 
-```
-        Clients (CLI / dashboards / services)
-                        |
-                        v
-              +------------------+
-              |   API Gateway    |   authn, rate limit (Phase 8)
-              +------------------+
-                        |
-                        v
-              +------------------+
-              |   API / Control  |   REST: submit, query, cancel, retry
-              |      Plane       |
-              +--------+---------+
-                       |
-         +-------------+--------------+
-         v                            v
-  +-------------+             +---------------+
-  | Job Service |             | Workflow Svc  |   definitions, lifecycle,
-  |             |             |               |   idempotency, quotas
-  +------+------+             +-------+-------+
-         |                            |
-         +------------+---------------+
-                      v
-        =========================================
-          PostgreSQL  (source of truth: jobs,
-          executions, schedules, queues, leases,
-          workflow state, audit)
-        =========================================
-                      ^
-        +-------------+-------------+
-        |     Scheduler Cluster     |   leader-elected; only leader
-        |   S1        S2        S3  |   evaluates schedules w/ fencing token
-        +-------------+-------------+
-                      |
-                      v
-              +----------------+
-              |   Dispatcher   |   eligible -> queue routing,
-              | (leader-delegated) | capacity checks, fairness
-              +----------------+
-                      |
-                      v
-        +---------------------------+
-        |        Queue Layer        |   durable queues in PG:
-        |  Q0 | Q1 | ... | QN      |   priority, delay, retry, DLQ
-        +---------------------------+
-                      |
-                      v
-        +---------------------------+
-        |     Worker Fleet          |   register, heartbeat, lease,
-        |  W-A   W-B   ...   W-N    |   execute, renew, ack/nack
-        +---------------------------+
+```mermaid
+flowchart LR
+    subgraph "Layer 1: Leadership"
+        L1[scheduler_leases row] -->|CAS takeover| L2[One active leader]
+        L1 -->|fencing token per grant| L3[Monotonic counter]
+    end
 
-  Observability: OpenTelemetry traces, Prometheus metrics, structured logs
-  (sidecar/collector processes, out of band).
+    subgraph "Layer 2: Execution Ownership"
+        E1[execution.fencing_token] -->|only holder writes outcome| E2[Stale writes = 0 rows]
+        E2 -->|renewal at lease/3| E3[Lease stays alive]
+    end
+
+    subgraph "Layer 3: Claim Mutex"
+        Q1[FOR UPDATE SKIP LOCKED] -->|per-message mutex| Q2[N workers, zero double-claims]
+    end
 ```
 
-Notes:
+### How stale owners are neutralized
 
-- The dispatcher begins as a **role inside the scheduler process**, not a separate service
-  (§64). It becomes deployable independently when its scaling need diverges (Phase 4+).
-- Workers talk **only to the database and the API**, never directly to schedulers. This keeps
-  the data plane decoupled from control-plane leadership changes.
-- Redis appears nowhere in Phase 0–3. It is introduced only if a measured need appears
-  (see ADR-005 discussion and OPEN-QUESTIONS #3).
+When a worker loses its lease (GC pause, network partition), a new owner takes over. The old worker's fencing token no longer matches, so every UPDATE it attempts matches zero rows. The stale owner cannot corrupt state even though it still *believes* it owns the job.
+
+```sql
+-- This is what a stale worker's write looks like:
+UPDATE job_executions SET status = 'COMPLETED'
+WHERE id = ? AND fencing_token = 42   -- token is stale; new token = 43
+-- Result: 0 rows affected. Write is silently discarded.
+```
 
 ---
 
-## 3. Logical component boundaries
+## Workflow Engine
 
-Each component lists: responsibility, owned tables, exposed interface, and explicitly what
-it must NOT do. Boundaries are enforced as build modules so extraction into services later
-is mechanical, not archaeological.
+Workflows are DAGs of tasks. Each task spawns a REAL platform job, inheriting retries, leases, timeouts, and DLQ handling.
 
-### 3.1 API Layer
-- **Owns:** request validation, authentication, tenant resolution, quota admission,
-  idempotency-key handling, HTTP semantics.
-- **Tables touched:** `idempotency_records`, `audit_events`; writes jobs/workflows via services.
-- **Interface:** REST (see API.md).
-- **Must NOT:** contain scheduling logic, execute jobs, or bypass quota checks.
+```mermaid
+sequenceDiagram
+    participant API
+    participant Driver as WorkflowDriver
+    participant Jobs as Job Store
+    participant Worker as WorkerLoop
+    participant DB as PostgreSQL
 
-### 3.2 Job Service
-- **Owns:** job definitions and lifecycle metadata; the authoritative job state machine.
-- **Tables:** `jobs`, `job_executions`, `job_events`.
-- **Interface:** `JobStore` (create/get/list/transitions guarded by optimistic version).
-- **Must NOT:** decide *when* things run (scheduler's job) or *where* (dispatcher's job).
+    API->>DB: Register definition (versioned, immutable)
+    API->>Driver: Start execution
+    Driver->>DB: Insert all tasks as BLOCKED
 
-### 3.3 Scheduler
-- **Owns:** deciding when jobs become eligible: delayed jobs due, recurring/cron occurrences,
-  missed-execution policy application.
-- **Tables:** reads `jobs`, `job_schedules`; writes eligibility transitions + `job_events`.
-- **Interface:** `SchedulingEngine` (pure logic over a `Clock`) + `ScheduleStore`.
-- **Must NOT:** touch queues directly (dispatcher's job); run concurrently in more than one
-  instance without fencing (coordination's job).
+    loop Every tick until done
+        Driver->>DB: Reconcile finished jobs
+        Driver->>DB: Unblock ready tasks (deps satisfied)
 
-### 3.4 Coordinator
-- **Owns:** cluster membership (`scheduler_nodes`), leader lease, fencing token generation.
-- **Tables:** `scheduler_nodes`, `scheduler_leases`, `fence_counters`.
-- **Interface:** `LeaderElector`, `FencingTokenSource`.
-- **Must NOT:** make scheduling decisions itself; it only arbitrates *permission*.
+        Note over Driver: Signal task? Stay RUNNING until signal arrives
+        Note over Driver: Wait task? Create durable timer row
+        Note over Driver: Child workflow? Spawn child execution
+        Note over Driver: JOB task? Create platform job
 
-### 3.5 Dispatcher
-- **Owns:** moving eligible jobs into execution queues; worker selection; capacity checks;
-  queue routing; fairness between tenants/queues.
-- **Tables:** `queue_messages`, reads `workers`, `jobs`.
-- **Interface:** `Dispatcher`, `QueueProducer`, `RoutingStrategy`, `FairnessStrategy`.
-- **Must NOT:** mutate job business state except QUEUED/DISPATCHED transitions.
+        Driver->>Jobs: Create backing job per unblocked task
+        Worker->>DB: Claim job, execute handler, report result
+        Worker->>DB: Task SUCCEEDED / FAILED
+    end
 
-### 3.6 Queue Layer
-- **Owns:** durable message storage, claim/visibility semantics, redelivery, DLQ routing.
-- **Tables:** `queue_messages` (+ DLQ represented as terminal states / dead-letter rows).
-- **Interface:** `Queue` (enqueue, claim, ack, nack, extend, requeue-expired).
-- **Must NOT:** know about cron, tenants' business meaning, or worker identity beyond claims.
+    Driver->>DB: All tasks terminal → workflow COMPLETED
+```
 
-### 3.7 Worker Manager
-- **Owns:** worker registry, heartbeats, health transitions, capacity accounting, lease grants.
-- **Tables:** `workers`, lease columns on executions/messages.
-- **Interface:** `WorkerRegistry`, `LeaseManager`.
-- **Must NOT:** trust heartbeats as proof of health (they are a liveness *signal*, §17).
+### Compensation flow
 
-### 3.8 Worker Runtime
-- **Owns:** executing job handlers, renewing leases, cooperative cancellation, reporting results.
-- **Tables:** updates own executions (guarded by fencing token), heartbeats `workers`.
-- **Interface:** `JobHandler` registry (typed handlers; no arbitrary code execution, §89),
-  `ExecutionClient`.
-- **Must NOT:** write any state without presenting a valid fencing token.
+```mermaid
+sequenceDiagram
+    participant Driver
+    participant DB
 
-### 3.9 Workflow Engine
-- **Owns:** DAG definitions/versions, execution planning, dependency resolution, durable
-  timers, task retries, compensation orchestration.
-- **Tables:** `workflows`, `workflow_versions`, `workflow_executions`,
-  `workflow_task_executions`, `workflow_timers`.
-- **Interface:** `WorkflowEngine`, `WorkflowStore`, `TimerService`.
-- **Must NOT:** keep runnable state in memory across restarts; everything resumable from DB.
-
-### 3.10 Persistence Layer
-- **Owns:** schema/migrations, transactional helpers, guarded-update primitives
-  ("compare-state-and-version in one UPDATE"), retention/archival jobs.
-- **Must NOT:** leak SQL semantics upward in ways that prevent later store swaps where
-  variation is genuine (§92) — but also must not create pointless abstractions over SQL
-  we deliberately chose (ADR-001).
+    Note over Driver: Task 'charge' FAILED_PERMANENT
+    Driver->>DB: Workflow status → FAILING
+    Driver->>DB: Insert UNDO tasks (reverse order) for succeeded tasks
+    loop For each UNDO task
+        Driver->>DB: Create compensation job
+        Worker->>DB: Execute undo → SUCCEEDED
+    end
+    Driver->>DB: All undos done → workflow FAILED compensated=true
+```
 
 ---
 
-## 4. Deployment architecture
+## Adaptive Retry Oracle
 
-### 4.1 Phase 1–2: single node, modular monolith
-
-One JVM process containing all modules, roles toggled by configuration:
-
+```mermaid
+flowchart TD
+    A[Job fails with THROTTLED] --> B{Oracle has ≥5 samples?}
+    B -- Yes --> C[Use empirically best delay bucket]
+    B -- No --> D[Use configured exponential backoff]
+    C --> E[Nack message with delay]
+    D --> E
+    E --> F[Message becomes READY after delay]
+    F --> G[Worker claims retry attempt]
+    G --> H{Succeeded?}
+    H -- Yes --> I[Record SUCCESS in bucket]
+    H -- No --> J[Record FAILURE in bucket]
+    J --> A
 ```
-java -jar platform.jar --roles=api,scheduler,dispatcher,worker
-```
-
-- Single PostgreSQL instance (Docker Compose).
-- Rationale: correctness first. Distributed coordination is meaningless before single-node
-  behavior is right. But module boundaries exist from day one so splitting is config, not surgery.
-
-### 4.2 Phase 3+: split processes
-
-```
-docker-compose (dev):
-  postgres:1        api:1        scheduler:3 (leader-elected)        worker:5
-```
-
-- Schedulers run identical binaries; leadership arbitrated by Postgres lease (ADR-005).
-- Workers scale horizontally; each registers with capabilities/capacity.
-- Graceful shutdown on SIGTERM: stop fetching → DRAINING → finish/renew current leases →
-  deregister → exit (§42). Kubernetes will not wait forever: termination grace period must
-  exceed worst-case drain time; documented in DEPLOYMENT notes at Phase 8.
-
-### 4.3 Kubernetes (Phase 8)
-
-- Deployments: api, scheduler (3 replicas), worker (HPA on queue depth — not CPU, §40).
-- StatefulSet or operator-managed Postgres initially; managed DB acceptable.
-- Readiness = registered + heartbeat fresh; Liveness = process responsive (NOT "has leases" —
-  losing leases must not trigger restart loops; recovery handles it).
-- PodDisruptionBudget on workers sized so drain capacity exists during voluntary disruptions.
-- ConfigMaps for tunables (all timeouts configurable, §70); Secrets for credentials.
-
-### 4.4 Failure containment expectations
-
-| Boundary | Isolates |
-| --- | --- |
-| Process | scheduler crash vs worker crash vs API crash |
-| Module | bugs in workflow engine cannot corrupt job state machine |
-| Tenant | noisy tenant throttled at admission, fair-shared at dispatch |
-| Queue | pathological job type cannot starve other types (per-type caps) |
 
 ---
 
-## 5. What we deliberately did NOT architect yet
+## Cascade Failure Firewall
 
-Per §101 (do not over-engineer early): no timing wheel, no work stealing, no queue
-partitioning, no external broker, no Redis, no multi-region, no plugin sandbox. Each has a
-documented trigger condition in ROADMAP.md / OPEN-QUESTIONS.md describing when it earns its
-complexity.
+```mermaid
+flowchart TD
+    A[Job fails] --> B{Extract host from error}
+    B -->|found| C[Increment failure_count for host]
+    C --> D{count >= 10 in 5min?}
+    D -- Yes --> E[QUARANTINE: cancel all READY messages targeting host]
+    D -- No --> F[Normal retry path]
+
+    E --> G[Sweeper TCP-checks host every 20s]
+    G --> H{Reachable?}
+    H -- Yes --> I[Release quarantined jobs to READY]
+    H -- No --> G
+```
+
+---
+
+## Leader Election
+
+```mermaid
+sequenceDiagram
+    participant F1 as Node A (Follower)
+    participant F2 as Node B (Follower)
+    participant DB as scheduler_leases table
+
+    F1->>DB: CAS: acquire if expired or mine
+    DB-->>F1: Token=42, expires in 15s
+    Note over F1: A is LEADER with fence token 42
+
+    F2->>DB: CAS: acquire (lease held by A, not expired)
+    DB-->>F2: 0 rows → stay FOLLOWER
+
+    A crashes (no renewal)
+
+    DB->>DB: Lease expires after 15s
+    F2->>DB: CAS: acquire (expired!)
+    DB-->>F2: Token=43 (> 42), expires in 15s
+    Note over F2: B is LEADER with fence token 43
+
+    A wakes up, tries to renew token 42
+    DB-->>A: 0 rows → STEP DOWN
+    A tries fenced write with token 42
+    DB-->>A: 0 rows → WRITE REJECTED
+```
+
+---
+
+## Deployment Topologies
+
+### Development (single JVM)
+
+```
+java -jar app.jar --schedula.roles.api=true --schedula.roles.scheduler=true --schedula.roles.worker=true
+```
+
+### Production (Kubernetes)
+
+```
+API Deployment (2 replicas)          ← readiness: /actuator/health/readiness
+Scheduler Deployment (3 replicas)    ← leader-elected, PDB minAvailable=1
+Worker Deployment (HPA-scaled)       ← subscribed_queues, capabilities, PDB
+PostgreSQL StatefulSet or RDS        ← streaming replication recommended
+Grafana + Prometheus                 ← dashboard JSON + alert rules included
+OTel Collector                       ← OTLP traces endpoint
+```
+
+---
+
+## Module Dependency Graph
+
+```
+app ──→ api ──→ persistence ──→ common
+ │                │
+ ├──→ engine ──→ coordination
+ │         │         │
+ │         ▼         │
+ ├──→ worker-runtime
+ │         │
+ └──→ dispatcher ──→ queue
+                      │
+                      └──→ persistence
+```
+
+Each module has a single responsibility. Boundaries are enforced by Maven module scoping.
