@@ -69,6 +69,11 @@ public class SchedulaConfig {
                 var webhooks = new com.schedula.engine.WebhookDispatcher(jdbc, coordinator, meters,
                         System.getenv().getOrDefault("SCHEDULA_WEBHOOK_SECRET", "schedula-dev-secret"));
                 sweeper.scheduleAtFixedRate(webhooks::tick, sweepMs, sweepMs, TimeUnit.MILLISECONDS);
+                var firewall = new com.schedula.engine.CascadeFirewall(jdbc,
+                        Integer.parseInt(System.getenv().getOrDefault("SCHEDULA_FW_THRESHOLD", "10")),
+                        Integer.parseInt(System.getenv().getOrDefault("SCHEDULA_FW_WINDOW_MIN", "5")));
+                sweeper.scheduleAtFixedRate(firewall::releaseAllQuarantined,
+                        sweepMs * 4, sweepMs * 4, TimeUnit.MILLISECONDS);
                 var wfDriver = new com.schedula.engine.workflow.WorkflowDriver(
                         workflowStore, jobStore, eventStore, coordinator, clock, meters);
                 wfRunner = new LoopRunner("workflow-driver", pollMs, wfDriver::tick, clock);
@@ -129,3 +134,4 @@ public class SchedulaConfig {
         };
     }
 }
+

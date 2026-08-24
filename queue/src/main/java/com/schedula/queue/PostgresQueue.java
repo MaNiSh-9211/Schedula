@@ -85,6 +85,9 @@ public class PostgresQueue {
         return claimConstrained(workerId, batch, visibilityTimeoutMs, filter);
     }
 
+    /** Decay half-life in seconds: a P3 waiting this long becomes effectively P4. */
+    static final long DECAY_HALF_LIFE_SEC = 60;
+
     private List<QueueMessage> claimUnrestricted(UUID workerId, int batch, long visibilityTimeoutMs) {
         return claimUnrestricted(workerId, batch, visibilityTimeoutMs, ClaimFilter.unrestricted());
     }
@@ -105,14 +108,19 @@ public class PostgresQueue {
                       AND COALESCE(j.required_mem_mb, 0) <= 0
                       AND EXISTS (SELECT 1 FROM workers w
                                   WHERE w.id = ? AND w.status = 'HEALTHY')
-                    ORDER BY m2.priority DESC, m2.enqueue_seq
+                    ORDER BY
+                        (m2.priority +
+                         EXTRACT(EPOCH FROM (now() - m2.enqueued_at))
+                         / GREATEST(?, 1)
+                        ) DESC,
+                        m2.enqueue_seq
                     LIMIT ?
                     FOR UPDATE OF m2 SKIP LOCKED
                 )
                 RETURNING m.*
                 """, MESSAGE, workerId, (double) visibilityTimeoutMs,
                 workerId, workerId,
-                workerId, batch);
+                workerId, (double) DECAY_HALF_LIFE_SEC, batch);
         claimsTotal.increment(claimed.size());
         return claimed;
     }
@@ -134,10 +142,15 @@ public class PostgresQueue {
                   AND COALESCE(j.required_capabilities, '{}'::text[])
                         <@ (SELECT capabilities FROM workers WHERE id = ?)
                   AND EXISTS (SELECT 1 FROM workers w WHERE w.id = ? AND w.status = 'HEALTHY')
-                ORDER BY m2.priority DESC, m2.enqueue_seq
+                ORDER BY
+                        (m2.priority +
+                         EXTRACT(EPOCH FROM (now() - m2.enqueued_at))
+                         / GREATEST(?, 1)
+                        ) DESC,
+                        m2.enqueue_seq
                 LIMIT ?
                 FOR UPDATE OF m2 SKIP LOCKED
-                """, MESSAGE, workerId, workerId, workerId, batch * 4);
+                """, MESSAGE, workerId, workerId, workerId, (double) DECAY_HALF_LIFE_SEC, batch * 4);
 
         // group per tenant, preserving priority order within each tenant
         var byTenant = new java.util.LinkedHashMap<UUID, java.util.ArrayDeque<QueueMessage>>();
@@ -446,6 +459,8 @@ public class PostgresQueue {
                 messageId);
     }
 }
+
+
 
 
 
