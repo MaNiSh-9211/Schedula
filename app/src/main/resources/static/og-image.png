@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1e1b4b"/>
+    </linearGradient>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#667eea"/>
+      <stop offset="100%" stop-color="#764ba2"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <rect x="80" y="80" width="1120" height="480" rx="24" fill="white" opacity="0.03"/>
+  <text x="640" y="240" font-family="system-ui, sans-serif" font-size="84" font-weight="800" fill="white" text-anchor="middle" filter="url(#glow)">Schedula</text>
+  <text x="640" y="340" font-family="system-ui, sans-serif" font-size="28" fill="#94a3b8" text-anchor="middle">A distributed job scheduler built to survive chaos</text>
+  <text x="640" y="400" font-size="20" fill="#94a3b8" text-anchor="middle">84/84 tests  •  9 modules  •  15 migrations  •  33 endpoints</text>
+  <g transform="translate(640, 480)" text-anchor="middle" font-family="system-ui, sans-serif" font-size="16" fill="#64748b">
+    <text x="-120" y="0">84/84 tests</text>
+    <text x="0" y="0">9 modules</text>
+    <text x="120" y="0">33 endpoints</text>
+  </g>
+</svg>
