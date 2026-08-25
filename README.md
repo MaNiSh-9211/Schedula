@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">`n<img src="docs/logo.svg" alt="Schedula Logo" width="120" height="120">
 
 # Schedula
 
@@ -88,4 +88,5 @@ curl -X POST localhost:8080/v1/jobs \
 mvn verify    # requires Docker for Testcontainers
 # 84 tests across 10 IT suites
 ```
+
 

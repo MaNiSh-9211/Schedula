@@ -38,10 +38,14 @@
       <groupId>com.schedula</groupId>
       <artifactId>schedula-engine</artifactId>
     </dependency>
-    <dependency>
-      <groupId>com.schedula</groupId>
-      <artifactId>schedula-worker-runtime</artifactId>
-    </dependency>
+<dependency>
+            <groupId>com.schedula</groupId>
+            <artifactId>schedula-engine</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.schedula</groupId>
+            <artifactId>schedula-worker-runtime</artifactId>
+        </dependency>
     <dependency>
       <groupId>com.schedula</groupId>
       <artifactId>schedula-api</artifactId>
