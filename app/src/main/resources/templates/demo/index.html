@@ -1,0 +1,108 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Schedula Demo</title>
+    <link rel="stylesheet" href="/style.css">
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+</head>
+<body>
+<div class="app-shell">
+    <header class="demo-header">
+        <div class="header-content">
+            <h1>Schedula Demo</h1>
+            <nav class="demo-nav">
+                <a href="#jobs" class="tab active" data-view="jobs">Jobs</a>
+                <a href="#workflows" data-view="workflows">Workflows</a>
+                <a href="#schedules" data-view="schedules">Schedules</a>
+                <a href="#dlq" data-view="dlq">DLQ</a>
+                <a href="#analytics" data-view="analytics">Analytics</a>
+            </nav>
+            <div class="header-actions">
+                <input type="text" id="apiKey" placeholder="X-API-Key" value="sk_00000000-0000-0000-0000-000000000001_devkey123" />
+                <input type="password" id="adminKey" placeholder="Admin Key (optional)" />
+                <button id="saveKeys" class="btn primary">Connect</button>
+                <span id="connStatus" class="status disconnected">Disconnected</span>
+            </div>
+        </div>
+    </header>
+
+    <main class="container">
+        <section id="view-jobs" class="view active">
+            <div class="toolbar">
+                <h2>Jobs</h2>
+                <div class="toolbar-right">
+                    <select id="jobs-status">
+                        <option value="">All</option>
+                        <option value="SCHEDULED">SCHEDULED</option>
+                        <option value="QUEUED">QUEUED</option>
+                        <option value="RUNNING">RUNNING</option>
+                        <option value="COMPLETED">COMPLETED</option>
+                        <option value="DEAD">DEAD</option>
+                    </select>
+                    <button class="btn primary" onclick="submitDemoJob()">+ Submit Job</button>
+                </div>
+            </div>
+            <table id="jobs-table">
+                <thead><tr><th>ID</th><th>Type</th><th>Status</th><th>Priority</th><th>Attempts</th><th>Actions</th></tr></thead>
+                <tbody id="jobs-tbody"></tbody>
+            </table>
+        </section>
+
+        <section id="view-workflows" class="view" hidden>
+            <div class="toolbar"><h2>Workflows</h2>
+                <button class="btn primary" onclick="startDemoWorkflow()">Start Demo Workflow</button>
+            </div>
+            <table id="workflows-table">
+                <thead><tr><th>ID</th><th>Status</th><th>Created</th><th>Tasks</th></tr></thead>
+                <tbody id="workflows-tbody"></tbody>
+            </table>
+        </section>
+
+        <section id="view-schedules" class="view" hidden>
+            <div class="toolbar"><h2>Schedules</h2></div>
+            <table id="schedules-table">
+                <thead><tr><th>Name</th><th>Type</th><th>Interval</th><th>Next Fire</th></tr></thead>
+                <tbody id="schedules-tbody"></tbody>
+            </table>
+        </section>
+
+        <section id="view-dlq" class="view" hidden>
+            <div class="toolbar"><h2>Dead Letter Queue</h2>
+                <button class="btn" onclick="loadDlq()">Refresh</button>
+            </div>
+            <table id="dlq-table">
+                <thead><tr><th>Job</th><th>Type</th><th>Attempts</th><th>Error</th><th>Action</th></tr></thead>
+                <tbody id="dlq-tbody"></tbody>
+            </table>
+        </section>
+
+        <section id="view-analytics" class="view" hidden>
+            <div class="metrics-grid">
+                <div class="metric-card"><h3>Queue Depth</h3><div class="metric-value" id="m-depth">-</div></div>
+                <div class="metric-card"><h3>Completed</h3><div class="metric-value" id="m-completed">-</div></div>
+                <div class="metric-card"><h3>Failed</h3><div class="metric-value" id="m-failed">-</div></div>
+                <div class="metric-card"><h3>Running</h3><div class="metric-value" id="m-running">-</div></div>
+            </div>
+        </section>
+
+        <!-- Submit Job Modal -->
+        <div id="submit-modal" class="modal" hidden>
+            <div class="modal-content">
+                <h3>Submit Job</h3>
+                <label>Job Type: <input id="new-type" value="echo" /></label>
+                <label>Payload (JSON): <textarea id="new-payload">{"msg":"demo"}</textarea></label>
+                <label>Queue: <input id="new-queue" value="default" /></label>
+                <label>Priority: <input id="new-priority" type="number" value="0" /></label>
+                <button class="btn primary" onclick="doSubmitJob()">Submit</button>
+                <button onclick="closeModal('submit-modal')">Cancel</button>
+            </div>
+        </div>
+    </main>
+
+    <div id="toast-container"></div>
+</div>
+<script src="/demo-app.js"></script>
+</body>
+</html>
