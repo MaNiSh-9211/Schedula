@@ -1,202 +1,103 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>`r`n    <meta name="description" content="A distributed job scheduler built to survive chaos. Reliable job scheduling with workflows, retries, and observability.">`r`n    <meta name="theme-color" content="#667eea">`r`n    <meta property="og:title" content="Schedula - Distributed Job Scheduler">`r`n    <meta property="og:description" content="A distributed job scheduler built to survive chaos. Reliable job scheduling with workflows, retries, and observability.">`r`n    <meta property="og:type" content="website">`r`n    <meta property="og:image" content="/og-image.svg">`r`n    <meta name="twitter:card" content="summary_large_image">`r`n    <meta name="twitter:title" content="Schedula - Distributed Job Scheduler">`r`n    <meta name="twitter:description" content="A distributed job scheduler built to survive chaos">`r`n    <meta name="twitter:image" content="/og-image.svg">`r`n    <link rel="icon" type="image/svg+xml" href="/favicon.svg">`r`n    <link rel="apple-touch-icon" href="/og-image.svg">`r`n    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Schedula Admin</title>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Schedula - Distributed Job Scheduler</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="stylesheet" href="/style.css">
+<style>
+:root{--bg:#0d1117;--panel:#161b22;--border:#30363d;--text:#c9d1d9;--muted:#8b949e;--accent:#58a6ff;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--purple:#bc8cff}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+.container{max-width:1200px;margin:0 auto;padding:0 16px}
+header{background:var(--panel);border-bottom:1px solid var(--border);padding:12px 0;position:sticky;top:0;z-index:100}
+.header-inner{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.header-inner h1{font-size:18px;display:flex;align-items:center;gap:8px}
+.header-inner h1 img{border-radius:6px}
+nav.tabs{display:flex;gap:4px;flex:1;flex-wrap:wrap}
+nav.tabs a{color:var(--muted);text-decoration:none;padding:6px 12px;border-radius:6px;font-size:13px}
+nav.tabs a.active{color:var(--text);background:var(--bg);border:1px solid var(--border)}
+.header-keys{display:flex;gap:6px;align-items:center}
+.header-keys input{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px;width:180px}
+.btn{padding:6px 14px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:var(--text);cursor:pointer;font-size:13px}
+.btn:hover{border-color:var(--accent)}
+.btn.primary{background:#1f6feb;border-color:#1f6feb;color:#fff}
+.btn.danger{background:#da3633;border-color:#da3633;color:#fff}
+.btn.warn{background:#bb8009;border-color:#bb8009;color:#fff}
+.btn-xs{padding:2px 8px;font-size:11px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);cursor:pointer}
+.btn-xs:hover{border-color:var(--accent)}
+.btn-xs.danger{color:var(--bad);border-color:var(--bad)}
+.btn-xs.warn{color:var(--warn);border-color:var(--warn)}
+main{padding:20px 0}
+.view{display:none}.view.active{display:block}
+.toolbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px}
+.toolbar h2{font-size:16px}
+.toolbar-right{display:flex;gap:8px;align-items:center}
+table{width:100%;border-collapse:collapse;background:var(--panel);border-radius:8px;overflow:hidden}
+th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--border);font-size:13px}
+th{background:#1c2128;color:var(--muted);font-weight:500}
+.badge{padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600}
+.s-completed,.s-succeeded{background:#0d4429;color:var(--ok)}
+.s-running{background:#0c2d6b;color:var(--accent)}
+.s-dead,.s-failed,.s-failed_terminal,.s-failed_permanent{background:#490202;color:var(--bad)}
+.s-queued,.s-scheduled,.s-dispatched,.s-retry_wait,.s-cancelling,.s-paused,.s-blocked{background:#3d2e00;color:var(--warn)}
+.s-cancelled,.s-abandoned{background:#3d1e1e;color:var(--muted)}
+.muted{color:var(--muted)}.mono{font-family:ui-monospace,monospace}.small{font-size:12px}
+.hidden{display:none!important}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:1000}
+.modal-content{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:24px;width:480px;max-width:90vw;max-height:80vh;overflow-y:auto}
+.modal-content h3{margin-bottom:16px}
+.modal-content label{display:block;margin:10px 0 4px;font-size:12px;color:var(--muted)}
+.modal-content input,.modal-content textarea,.modal-content select{width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px;font-size:13px}
+.modal-content textarea{min-height:80px;font-family:ui-monospace,monospace}
+.modal-content .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:16px}
+.card b{display:block;font-size:22px}
+.card span{color:var(--muted);font-size:12px}
+pre.mono{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;overflow-x:auto;font-size:12px;white-space:pre-wrap}
+.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0}
+.detail-grid pre{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px;font-size:12px;overflow-x:auto}
+.detail-table{width:100%;border-collapse:collapse;margin:8px 0;font-size:12px}
+.detail-table th,.detail-table td{padding:4px 8px;border:1px solid var(--border);text-align:left}
+.detail-table th{background:#1c2128}
+.metrics-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:16px 0}
+.metric-card{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center}
+.metric-card h3{font-size:11px;color:var(--muted);font-weight:400;margin-bottom:4px}
+.metric-value{font-size:20px;font-weight:700}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.form-grid .full{grid-column:1/-1}
+#toast-container{position:fixed;bottom:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:6px}
+.toast{padding:10px 16px;border-radius:6px;background:var(--panel);border:1px solid var(--border);color:var(--text);font-size:13px}
+.toast.error{border-color:var(--bad);color:var(--bad)}
+.toast.success{border-color:var(--ok);color:var(--ok)}
+.section-title{font-size:14px;font-weight:600;margin:20px 0 8px;color:var(--text)}
+</style>
 </head>
 <body>
-<header>
-  <h1>⚙ Schedula</h1>
-  <nav>
-    <button data-view="overview" class="active">Overview</button>
-    <button data-view="jobs">Jobs</button>
-    <button data-view="workflows">Workflows</button>
-    <button data-view="schedules">Schedules</button>
-    <button data-view="dlq">DLQ</button>
-    <button data-view="fleet">Fleet</button>
-    <button data-view="audits">Audits</button>
-  </nav>
-  <div id="keybox">
-    <input id="apikey" type="password" placeholder="X-API-Key (sk_...)" autocomplete="off">
-    <input id="adminkey" type="password" placeholder="X-Admin-Key (optional)" autocomplete="off">
-    <button id="savekeys">Connect</button>
-    <span id="connstate"></span>
-  </div>
-</header>
-
-<main>
-
-<!-- OVERVIEW -->
-<section id="view-overview" class="view active">
-  <div class="cards" id="overview-cards"></div>
-  <h2>Scheduler cluster</h2>
-  <pre id="overview-leader" class="mono">—</pre>
-  <h2>Queues</h2>
-  <table id="overview-queues"><thead><tr><th>queue</th><th>ready</th><th>claimed</th><th>dead</th></tr></thead><tbody></tbody></table>
-
-        <div id='job-detail-panel' class='hidden' style='background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:16px;margin-top:12px'></div>
-</section>
-
-<!-- JOBS -->
-<section id="view-jobs" class="view">
-  <details open>
-    <summary>Submit job</summary>
-    <form id="submit-form" class="grid">
-      <label>type* <input name="jobType" required placeholder="log|sleep|http|..."></label>
-      <label>payload (json) <input name="payloadText" value="{}"></label>
-      <label>priority <input name="priority" type="number" value="0"></label>
-      <label>scheduledFor ISO <input name="scheduledFor" placeholder="optional, e.g. 2026-12-01T09:00:00Z"></label>
-      <label>maxAttempts <input name="maxAttempts" type="number" placeholder="3"></label>
-      <label>timeoutMs <input name="timeoutMs" type="number" placeholder="60000"></label>
-      <label>required caps (csv) <input name="caps" placeholder="python,gpu"></label>
-      <label>requiredCpu <input name="requiredCpu" type="number" placeholder="0"></label>
-      <label>requiredMemMb <input name="requiredMemMb" type="number" placeholder="0"></label>
-      <label>Idempotency-Key <input name="idemKey" placeholder="optional"></label>
-      <label>retryPolicy (json) <input name="retryPolicyText" placeholder='{"backoff":"EXPONENTIAL_JITTERED"}'></label>
-      <button type="submit">Submit</button>
-    </form>
-    <pre id="submit-result" class="mono small"></pre>
-  </details>
-
-  <div class="toolbar">
-    <select id="jobs-status">
-      <option value="">any status</option>
-      <option>SCHEDULED</option><option>QUEUED</option><option>DISPATCHED</option>
-      <option>RUNNING</option><option>RETRY_WAIT</option><option>CANCELLING</option>
-      <option>COMPLETED</option><option>FAILED_TERMINAL</option><option>DEAD</option>
-      <option>CANCELLED</option><option>PAUSED</option>
-    </select>
-    <button onclick="loadJobs()">refresh</button>
-    <span id="jobs-meta" class="muted"></span>
-  </div>
-  <table id="jobs-table">
-    <thead><tr><th>id</th><th>type</th><th>status</th><th>prio</th><th>attempts</th>
-      <th>scheduledFor</th><th>updated</th><th>actions</th></tr></thead>
-    <tbody></tbody>
-  </table>
-
-  <div id="job-detail" class="hidden">
-    <h2>Job <span id="jd-id" class="mono"></span></h2>
-    <pre id="jd-json" class="mono"></pre>
-    <h3>Executions</h3>
-    <table id="jd-exec"><thead><tr><th>#</th><th>status</th><th>worker</th><th>fence</th><th>started</th><th>finished</th><th>error</th></tr></thead><tbody></tbody></table>
-    <h3>Events</h3>
-    <table id="jd-events"><thead><tr><th>time</th><th>event</th><th>actor</th><th>reason</th></tr></thead><tbody></tbody></table>
-  </div>
-</section>
-
-<!-- WORKFLOWS -->
-<section id="view-workflows" class="view">
-  <details open><summary>Register workflow definition</summary>
-    <form id="wf-register" class="grid">
-      <label>name* <input name="name" required placeholder="order-flow"></label>
-      <label>definition (json)* <input name="defText" class="wide"
-        placeholder='{"tasks":[{"key":"a","jobType":"log","payload":{}},{"key":"b","jobType":"log","dependsOn":["a"]}]}'></label>
-      <button type="submit">Register</button>
-    </form>
-    <pre id="wf-reg-result" class="mono small"></pre>
-  </details>
-  <details open><summary>Start execution</summary>
-    <form id="wf-start" class="grid">
-      <label>workflow name* <input name="name" required></label>
-      <label>input (json) <input name="inputText" value="{}"></label>
-      <button type="submit">Start</button>
-    </form>
-  </details>
-  <div class="toolbar"><button onclick="loadWorkflows()">refresh</button>
-    <span class="muted">click a row for task states</span></div>
-  <table id="wf-table">
-    <thead><tr><th>execution</th><th>status</th><th>compensated</th><th>created</th><th></th></tr></thead>
-    <tbody></tbody></table>
-  <div id="wf-detail" class="hidden">
-    <h3>Tasks</h3>
-    <table id="wft-table"><thead><tr><th>key</th><th>kind</th><th>status</th><th>attempt</th><th>job</th><th>error</th></tr></thead><tbody></tbody></table>
-  </div>
-</section>
-
-<!-- SCHEDULES -->
-<section id="view-schedules" class="view">
-  <details open><summary>Create schedule</summary>
-    <form id="sched-form" class="grid">
-      <label>name* <input name="name" required></label>
-      <label>jobType* <input name="jobType" required value="log"></label>
-      <label>payload (json) <input name="payloadText" value="{}"></label>
-      <label>mode
-        <select name="mode"><option value="cron">cron</option><option value="interval">fixed interval ms</option></select>
-      </label>
-      <label>cron expr <input name="cronExpr" placeholder="0 0 9 * * *"></label>
-      <label>timezone <input name="timezone" placeholder="Europe/Berlin"></label>
-      <label>intervalMs <input name="intervalMs" type="number" placeholder="60000"></label>
-      <label>missed policy
-        <select name="missedPolicy"><option>COALESCE</option><option>SKIP_TO_LATEST</option></select>
-      </label>
-      <button type="submit">Create</button>
-    </form>
-    <pre id="sched-result" class="mono small"></pre>
-  </details>
-  <button onclick="loadSchedules()">refresh</button>
-  <table id="sched-table">
-    <thead><tr><th>name</th><th>kind</th><th>expr/interval</th><th>tz</th><th>next fire (UTC)</th><th>policy</th><th></th></tr></thead>
-    <tbody></tbody>
-  </table>
-</section>
-
-<!-- DLQ -->
-<section id="view-dlq" class="view">
-  <button onclick="loadDlq()">refresh</button>
-  <table id="dlq-table">
-    <thead><tr><th>message</th><th>job</th><th>type</th><th>deliveries</th><th>error</th><th>resolved</th><th>actions</th></tr></thead>
-    <tbody></tbody>
-  </table>
-</section>
-
-'<!-- FINGERPRINTS -->
-<section id="view-fingerprints" class="view" hidden>
-  <div class="toolbar"><h2>Job Fingerprints</h2>
-    <span class="muted">Auto-computed per-type execution profiles (24h window)</span></div>
-  <table id="fingerprints-table">
-    <thead><tr><th>Type</th><th>Total</th><th>OK</th><th>Fail</th><th>Rate</th><th>P50</th><th>P95</th><th>P99</th><th>Avg Retry</th><th>Top Error</th></tr></thead>
-    <tbody id="fingerprints-tbody"></tbody>
-  </table>
-</section>
-
-<!-- FIREWALL -->
-<section id="view-firewall" class="view" hidden>
-  <div class="toolbar"><h2>Cascade Firewall</h2>
-    <span class="muted">Auto-quarantines dead dependencies</span></div>
-  <div id="firewall-status" class="metric-card">Checking...</div>
-</section>
-
-<!-- AUDITS -->'
-<section id="view-audits" class="view">
-  <div class="toolbar"><button onclick="loadAudits()">refresh</button>
-    <span class="muted">requires admin key</span></div>
-  <table id="audits-table">
-    <thead><tr><th>time</th><th>actor</th><th>action</th><th>target type</th><th>target</th></tr></thead>
-    <tbody></tbody></table>
-</section>
-
-<!-- FLEET -->
-<section id="view-fleet" class="view">
-  <button onclick="loadFleet()">refresh</button>
-  <h2>Workers</h2>
-  <table id="workers-table">
-    <thead><tr><th>name</th><th>status</th><th>version</th><th>capabilities</th><th>running/max</th><th>last heartbeat</th></tr></thead>
-    <tbody></tbody></table>
-  <h2>Schedulers</h2>
-  <pre id="schedulers-pre" class="mono"></pre>
-</section>
-
-</main>
-<div id="toast"></div>
+<header><div class="container header-inner">
+<h1><img src="/favicon.svg" width="28" height="28" alt="S"> Schedula</h1>
+<nav class="tabs" id="main-nav">
+<a href="#dashboard" class="active" data-view="dashboard">Dashboard</a>
+<a href="#jobs" data-view="jobs">Jobs</a>
+<a href="#workflows" data-view="workflows">Workflows</a>
+<a href="#schedules" data-view="schedules">Schedules</a>
+<a href="#dlq" data-view="dlq">DLQ</a>
+<a href="#fleet" data-view="fleet">Fleet</a>
+<a href="#fingerprints" data-view="fingerprints">Fingerprints</a>
+<a href="#analytics" data-view="analytics">Analytics</a>
+<a href="#admin" data-view="admin">Admin</a>
+</nav>
+<div class="header-keys">
+<input id="in-api-key" placeholder="API Key" value="sk_00000000-0000-0000-0000-000000000001_devkey123">
+<input id="in-admin-key" placeholder="Admin Key">
+<button class="btn primary" onclick="saveKeys()">Go</button>
+</div>
+</div></header>
+<main class="container" id="main-content"></main>
+<div id="modal-root"></div>
+<div id="toast-container"></div>
 <script src="/app.js"></script>
 </body>
 </html>
-
-
-
-
-
-
