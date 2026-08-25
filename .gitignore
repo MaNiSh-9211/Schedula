@@ -26,6 +26,8 @@ replay_pid*
 # --- local env / secrets ---
 .env
 .env.*
+.env.*
+!*.env.example
 *.local.properties
 
 # --- os junk ---
