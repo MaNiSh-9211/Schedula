@@ -35,6 +35,8 @@
   <pre id="overview-leader" class="mono">—</pre>
   <h2>Queues</h2>
   <table id="overview-queues"><thead><tr><th>queue</th><th>ready</th><th>claimed</th><th>dead</th></tr></thead><tbody></tbody></table>
+
+        <div id='job-detail-panel' class='hidden' style='background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:16px;margin-top:12px'></div>
 </section>
 
 <!-- JOBS -->
@@ -150,7 +152,24 @@
   </table>
 </section>
 
-<!-- AUDITS -->
+'<!-- FINGERPRINTS -->
+<section id="view-fingerprints" class="view" hidden>
+  <div class="toolbar"><h2>Job Fingerprints</h2>
+    <span class="muted">Auto-computed per-type execution profiles (24h window)</span></div>
+  <table id="fingerprints-table">
+    <thead><tr><th>Type</th><th>Total</th><th>OK</th><th>Fail</th><th>Rate</th><th>P50</th><th>P95</th><th>P99</th><th>Avg Retry</th><th>Top Error</th></tr></thead>
+    <tbody id="fingerprints-tbody"></tbody>
+  </table>
+</section>
+
+<!-- FIREWALL -->
+<section id="view-firewall" class="view" hidden>
+  <div class="toolbar"><h2>Cascade Firewall</h2>
+    <span class="muted">Auto-quarantines dead dependencies</span></div>
+  <div id="firewall-status" class="metric-card">Checking...</div>
+</section>
+
+<!-- AUDITS -->'
 <section id="view-audits" class="view">
   <div class="toolbar"><button onclick="loadAudits()">refresh</button>
     <span class="muted">requires admin key</span></div>
@@ -175,6 +194,8 @@
 <script src="/app.js"></script>
 </body>
 </html>
+
+
 
 
 

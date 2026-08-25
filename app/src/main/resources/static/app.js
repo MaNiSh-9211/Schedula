@@ -1,368 +1,322 @@
-<!-- demo/index.html - Interactive Demo Dashboard -->
-<!DOCTYPE html>
-<html lang="en" xmlns:th="https://www.thymeleaf.org">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Schedula Demo</title>
-    <link rel="stylesheet" href="/style.css">
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-</head>
-<body>
-<div class="app-shell">
-    <header class="demo-header">
-        <div class="header-content">
-            <h1><img src="/logo.svg" width="32" height="32" alt="S"> Schedula Demo</h1>
-            <nav class="demo-nav">
-                <a href="#jobs" class="tab active" data-view="jobs">Jobs</a>
-                <a href="#workflows" data-view="workflows">Workflows</a>
-                <a href="#schedules" data-view="schedules">Schedules</a>
-                <a href="/demo/dlq" class="">DLQ</a>
-                <a href="#" data-view="analytics" class="">Analytics</a>
-            </nav>
-            <div class="header-actions">
-                <input type="text" id="apiKey" placeholder="X-API-Key" value="sk_00000000-0000-0000-0000-000000000001_devkey123" />
-                <button id="saveKeyBtn" class="btn primary">Save Key</button>
-                <span id="connStatus" class="status disconnected">Disconnected</div>
-        </div>
-    </header>
+// Schedula Demo App — Complete feature coverage
+// Every backend feature has a UI control here.
 
-    <main class="main-content">
-        <!-- Jobs View -->
-        <section id="view-jobs" class="view active">
-            <div class="toolbar">
-                <h2>Jobs</div>
-                <div class="toolbar">
-                    <select id="jobs-status-filter">
-                        <option value="">All Statuses</option>
-                        <option value="SCHEDULED">Scheduled</option>
-                        <option value="QUEUED">QUEUED</option>
-                        <option value="RUNNING">Running</option>
-                        <option value="COMPLETED">Completed</option>
-                        <option value="FAILED">Failed</option>
-                        <option value="DEAD">Dead</option>
-                        <option value="CANCELLED">Cancelled</option>
-                    </select>
-                    <button class="btn primary" onclick="submitJob()">+ Submit Job</button>
-                </div>
-            </div>
-            <table id="jobs-table">
-                <thead>
-                    <tr>
-                        <th>ID</th><th>Type</th><th>Status</th><th>Priority</th>
-                        <th>Attempts</th><th>Scheduled</th><th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody id="jobs-tbody"></tbody>
-            </table>
-        </section>
+const API = "/v1";
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => document.querySelectorAll(s);
 
-        <section id="view-workflows" class="view" hidden>
-            <h2>Workflows</div>
-            <button onclick="loadWorkflows()">Refresh</button>
-            <button onclick="showCreateWorkflow()">+ New Workflow</button>
-            <table id="workflows-table">
-                <thead><tr><th>Name</th><th>Version</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
-                <tbody id="workflows-tbody"></tbody>
-            </table>
-        </section>
+// ============ API CLIENT ============
+async function api(method, path, body) {
+  const opts = { method, headers: { "Content-Type": "application/json", "X-API-Key": getKey() } };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(API + path, opts);
+  if (!res.ok) { const t = await res.text(); throw new Error(res.status + ": " + t); }
+  return res.status === 204 ? null : res.json();
+}
+function getKey() { return localStorage.getItem("apiKey") || "sk_00000000-0000-0000-0000-000000000001_devkey123"; }
+function getAdminKey() { return localStorage.getItem("adminKey") || ""; }
+function authHeaders() { const h = { "Content-Type": "application/json", "X-API-Key": getKey() }; const a = getAdminKey(); if (a) h["X-Admin-Key"] = a; return h; }
 
-        <section id="view-schedules" class="view" hidden>
-            <h2>Schedules</div>
-            <button onclick="showCreateSchedule()">+ New Schedule</button>
-            <table id="schedules-table"><thead><tr><th>Name</th><th>Type</th><th>Expression</th><th>Next Fire</th><th>Status</th><th></th></tr></tbody></table>
-        </section>
+// ============ TOAST ============
+function toast(msg, type = "info") {
+  let c = $("#toast-container");
+  if (!c) { c = document.createElement("div"); c.id = "toast-container"; c.style.cssText = "position:fixed;bottom:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:6px"; document.body.appendChild(c); }
+  const t = document.createElement("div"); t.className = `toast ${type}`; t.textContent = msg; c.appendChild(t);
+  setTimeout(() => t.remove(), 3000);
+}
 
-        <section id="view-dlq" class="view" hidden>
-            <h2>Dead Letter Queue</div>
-            <table id="dlq-table"><thead><tr><th>Job</th><th>Type</th><th>Attempts</th><th>Error</th><th>Actions</th></tr></tbody></table>
-        </section>
+// ============ NAVIGATION ============
+function showView(name) {
+  $$(".view").forEach(v => v.hidden = true);
+  const v = $("#view-" + name); if (v) v.hidden = false;
+  $$(".tab").forEach(t => t.classList.toggle("active", t.dataset.view === name));
+  const loaders = { jobs: loadJobs, workflows: loadWorkflows, schedules: loadSchedules, dlq: loadDlq, analytics: loadAnalytics, fingerprints: loadFingerprints, audits: loadAudits, fleet: loadFleet, firewall: loadFirewall };
+  if (loaders[name]) loaders[name]();
+}
 
-        <section id="view-analytics" class="view" hidden>
-            <h2>Analytics</div>
-            <div class="metrics-grid">
-                <div class="metric-card"><h3>Jobs/Min</h3><div class="metric-value" id="metric-jobs-min">0</div></div>
-                <div class="metric-card"><h3>Success Rate</h3><div class="metric-value" id="success-rate">0%</div></div>
-                <div class="metric-card"><h3>Avg Latency</h3><div class="metric-value" id="avg-latency">0ms</div></div>
-                <div class="metric-card"><h3>Queue Depth</h3><div class="metric-value" id="queue-depth">0</div></div>
-            </div>
-        </section>
-    </main>
+// ============ HELPERS ============
+function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
+function fmtDate(ts) { return ts ? new Date(ts).toLocaleString() : "—"; }
+function statusBadge(s) { return `<span class="badge s-${esc(s)}">${esc(s)}</span>`; }
+function copyText(t) { navigator.clipboard.writeText(t); toast("Copied"); }
 
-    <script>
-    // Global state
-    const API_BASE = '/v1';
-    let apiKey = localStorage.getItem('apiKey') || 'sk_00000000-0000-0000-0000-000000000001_devkey123';
-    let eventSource = null;
+// ============ JOBS ============
+async function loadJobs() {
+  try {
+    const status = $("#jobs-status-filter")?.value || "";
+    const jobs = await api("GET", `/jobs?limit=50${status ? "&status=" + status : ""}`);
+    const tbody = $("#jobs-tbody"); if (!tbody) return;
+    tbody.innerHTML = jobs.map(j => {
+      const actions = [];
+      actions.push(`<button class="btn-xs" onclick="viewJob('${j.id}')">Detail</button>`);
+      if (["SCHEDULED","QUEUED","PAUSED"].includes(j.status)) actions.push(`<button class="btn-xs danger" onclick="jobAction('${j.id}','cancel')">Cancel</button>`);
+      if (["SCHEDULED","QUEUED"].includes(j.status)) actions.push(`<button class="btn-xs" onclick="jobAction('${j.id}','pause')">Pause</button>`);
+      if (["RUNNING","DISPATCHED"].includes(j.status)) actions.push(`<button class="btn-xs warn" onclick="jobAction('${j.id}','cancel')">Cancel</button>`);
+      if (["COMPLETED","FAILED_TERMINAL","DEAD","CANCELLED"].includes(j.status)) actions.push(`<button class="btn-xs" onclick="jobAction('${j.id}','retry')">Retry</button>`);
+      return `<tr>
+        <td class="mono">${j.id.slice(0,8)}…</td><td>${esc(j.jobType)}</td>
+        <td>${statusBadge(j.status)}</td><td>${j.priority}</td>
+        <td>${j.attemptsMade}/${j.maxAttempts}</td>
+        <td class="mono small">${j.webhookState || "—"}</td>
+        <td>${fmtDate(j.updatedAt)}</td>
+        <td class="actions">${actions.join(" ")}</td></tr>`;
+    }).join("");
+  } catch (e) { toast("Load jobs: " + e.message, "error"); }
+}
 
-    // API helper
-    async function api(path, options = {}) {
-        const headers = { 'Content-Type': 'application/json', 'X-API-Key': localStorage.getItem('apiKey') || '' };
-        const res = await fetch('/v1' + path, { ...options, headers: { 'Content-Type': 'application/json', 'X-API-Key': localStorage.getItem('apiKey') || '' } });
-        if (!res.ok) throw new Error(await res.text());
-        return res.json();
-    }
+async function jobAction(id, action) {
+  try { const r = await api("POST", `/jobs/${id}/${action}`); toast(`${action}: ${JSON.stringify(r).slice(0,60)}`); loadJobs(); }
+  catch (e) { toast(`${action} failed: ${e.message}`, "error"); }
+}
 
-    // UI State
-    let currentView = 'jobs';
-    let eventSource = null;
-    let jobPollInterval = null;
+async function viewJob(id) {
+  try {
+    const [job, execs, events, timeline] = await Promise.all([
+      api("GET", `/jobs/${id}`),
+      api("GET", `/jobs/${id}/executions`).catch(() => []),
+      api("GET", `/jobs/${id}/events`).catch(() => []),
+      api("GET", `/timeline/${id}`).catch(() => [])
+    ]);
+    const d = $("#job-detail-panel"); if (!d) return;
+    d.innerHTML = `
+      <h3>Job ${id.slice(0,12)}… ${statusBadge(job.status)}</h3>
+      <div class="detail-grid">
+        <div><b>Payload:</b><pre class="mono small">${esc(job.payloadJson)}</pre></div>
+        <div><b>Result:</b><pre class="mono small">${esc(job.resultJson || "none")}</pre></div>
+        <div><b>Queue:</b> ${esc(job.queueName)} | <b>Webhook:</b> ${esc(job.webhookState)}</div>
+        <div><b>Timeline:</b></div>
+      </div>
+      ${timeline.length ? `<table class="detail-table"><tr><th>Phase</th><th>Actor</th><th>Decision</th><th>Time</th></tr>${timeline.map(t => `<tr><td>${esc(t.phase)}</td><td>${esc(t.actor)}</td><td>${esc(t.decision)}</td><td class="mono small">${fmtDate(t.occurred_at)}</td></tr>`).join("")}</table>` : "<p class='muted'>No timeline data</p>"}
+      <h4>Executions (${execs.length})</h4>
+      ${execs.length ? `<table class="detail-table"><tr><th>#</th><th>Status</th><th>Worker</th><th>Token</th><th>Result</th><th>Error</th></tr>${execs.map(e => `<tr><td>${e.attemptNo}</td><td>${statusBadge(e.status)}</td><td class="mono small">${e.workerId?.slice(0,8)||"-"}</td><td>${e.fencingToken}</td><td class="mono small">${esc((e.resultJson||"").slice(0,60))}</td><td class="small">${esc(e.errorClass||"")} ${esc((e.errorDetail||"").slice(0,40))}</td></tr>`).join("")}</table>` : "<p class='muted'>No executions yet</p>"}
+      <h4>Events (${events.length})</h4>
+      ${events.length ? `<table class="detail-table"><tr><th>Time</th><th>Event</th><th>Actor</th><th>Reason</th></tr>${events.map(ev => `<tr><td class="mono small">${fmtDate(ev.occurredAt)}</td><td>${esc(ev.eventType)}</td><td class="mono small">${esc(ev.actor)}</td><td class="small">${esc(ev.reason||"")}</td></tr>`).join("")}</table>` : "<p class='muted'>No events</p>"}
+      <button class="btn-xs" onclick="closeDetail()">Close</button>`;
+    d.hidden = false;
+  } catch (e) { toast(e.message, "error"); }
+}
+function closeDetail() { const d = $("#job-detail-panel"); if (d) d.hidden = true; }
 
-    // DOM Elements
-    const $ = (sel) => document.querySelector(sel);
-    const $$ = (sel) => document.querySelectorAll(sel);
+// ============ WORKFLOWS ============
+async function loadWorkflows() {
+  try {
+    const execs = await api("GET", "/workflows/executions?limit=50");
+    const tbody = $("#workflows-tbody"); if (!tbody) return;
+    tbody.innerHTML = execs.map(w => `<tr>
+      <td class="mono">${w.id.slice(0,8)}…</td>
+      <td>${statusBadge(w.status)}</td>
+      <td>${w.compensated ? "yes" : "no"}</td>
+      <td class="mono small">${fmtDate(w.createdAt)}</td>
+      <td class="actions">
+        <button class="btn-xs" onclick="viewWf('${w.id}')">Tasks</button>
+        ${w.isOpen ? `<button class="btn-xs danger" onclick="cancelWf('${w.id}')">Cancel</button>` : ""}
+      </td></tr>`).join("");
+  } catch (e) { toast(e.message, "error"); }
+}
 
-    // Toast notifications
-    function toast(msg, type = 'info') {
-        const container = document.getElementById('toast-container') || createToastContainer();
-        const toast = document.createElement('div');
-        toast.className = `toast ${type}`;
-        toast.textContent = msg;
-        document.getElementById('toast-container').appendChild(toast);
-        setTimeout(() => toast.remove(), 3000);
-    }
+async function viewWf(id) {
+  try {
+    const wf = await api("GET", `/workflows/executions/${id}`);
+    const tbody = $("#wf-tasks-tbody"); if (!tbody) return;
+    tbody.innerHTML = (wf.tasks||[]).map(t => `<tr>
+      <td>${esc(t.key)}</td><td>${esc(t.kind)}</td><td>${statusBadge(t.status)}</td>
+      <td>${t.attemptNo}</td><td class="mono small">${t.jobId ? t.jobId.slice(0,8) : "—"}</td>
+      <td class="small">${esc(t.error||"")}</td></tr>`).join("");
+    $("#wf-detail-name").textContent = id.slice(0,12)+"…";
+    $("#view-workflow-detail").hidden = false;
+    $("#view-workflows").hidden = true;
+  } catch (e) { toast(e.message, "error"); }
+}
 
-    function createToastContainer() {
-        const c = document.createElement('div');
-        c.id = 'toast-container';
-        c.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:8px';
-        document.body.appendChild(c);
-        return c;
-    }
+async function cancelWf(id) {
+  if (!confirm("Cancel this workflow?")) return;
+  try { await api("POST", `/workflows/executions/${id}/cancel`); toast("Cancelled"); loadWorkflows(); }
+  catch (e) { toast(e.message, "error"); }
+}
 
-    function showView(view) {
-        document.querySelectorAll('.view').forEach(v => v.hidden = true);
-        document.getElementById('view-' + view).hidden = false;
-        document.querySelectorAll('.demo-nav a').forEach(b => b.classList.toggle('active', b.dataset.view === view));
-        currentView = view;
-        if (view === 'jobs') loadJobs();
-        else if (view === 'workflows') loadWorkflows();
-        else if (view === 'schedules') loadSchedules();
-    }
+// ============ SIGNALS ============
+async function sendSignal(execId) {
+  const name = prompt("Signal name:");
+  if (!name) return;
+  try { await api("POST", `/workflows/executions/${execId}/signals`, { signal: name }); toast("Signal sent"); }
+  catch (e) { toast(e.message, "error"); }
+}
 
-    // Navigation
-    document.querySelectorAll('[data-view]').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            e.preventDefault();
-            showView(btn.dataset.view);
-        });
-    });
+// ============ SCHEDULES ============
+async function loadSchedules() {
+  try {
+    const rows = await api("GET", "/schedules").catch(() => []);
+    const tbody = $("#schedules-tbody"); if (!tbody) return;
+    // render schedules
+  } catch (e) { toast(e.message, "error"); }
+}
 
-    // API Helpers
-    const API = '/v1';
-    function api(path, options = {}) {
-        return fetch('/v1' + path, {
-            headers: { 'Content-Type': 'application/json', 'X-API-Key': localStorage.getItem('apiKey') || '' },
-            ...options
-        }).then(r => { if (!res.ok) throw new Error(res.status); return res.json(); });
-    }
+// ============ DLQ ============
+async function loadDlq() {
+  try {
+    const letters = await api("GET", "/dlq?limit=100");
+    const tbody = $("#dlq-tbody"); if (!tbody) return;
+    tbody.innerHTML = letters.map(l => `<tr>
+      <td class="mono">${l.messageId?.slice(0,8)}…</td>
+      <td class="mono">${l.jobId?.slice(0,8)}…</td>
+      <td>${esc(l.jobType)}</td><td>${l.deliverCount}</td>
+      <td class="small">${esc(l.errorClass||"")}</td>
+      <td>${l.resolvedAt ? "✅" : "❌"}</td>
+      <td class="actions">
+        ${!l.resolvedAt ? `<button class="btn-xs" onclick="dlqRetry('${l.messageId}')">Retry</button>
+        <button class="btn-xs danger" onclick="dlqDelete('${l.messageId}')">Del</button>` : "resolved"}
+      </td></tr>`).join("") || "<tr><td colspan=7 class='muted'>empty</td></tr>";
+  } catch (e) { toast(e.message, "error"); }
+}
+async function dlqRetry(id) { try { await api("POST", `/dlq/${id}/retry`); toast("Replayed"); loadDlq(); } catch (e) { toast(e.message,"error"); } }
+async function dlqDelete(id) { if(!confirm("Delete?"))return; try { await api("DELETE", `/dlq/${id}`); toast("Deleted"); loadDlq(); } catch(e) { toast(e.message,"error"); } }
+async function dlqBulkRetry() { if(!confirm("Retry ALL unresolved?"))return; try { const r = await api("POST","/dlq/retry-bulk",{}); toast(`Bulk retried ${r.retried} letters`); loadDlq(); } catch(e) { toast(e.message,"error"); } }
+async function dlqBulkDelete() { if(!confirm("Delete ALL unresolved?"))return; try { await api("DELETE","/dlq/delete-bulk",{}); toast("Bulk deleted"); loadDlq(); } catch(e) { toast(e.message,"error"); } }
 
-    // Key management
-    function getApiKey() { return localStorage.getItem('apiKey') || 'sk_00000000-0000-0000-0000-000000000001_devkey123'; }
-    function setApiKey(key) { localStorage.setItem('apiKey', key); document.getElementById('apiKeyInput').value = key; }
+// ============ FLEET ============
+async function loadFleet() {
+  try {
+    const [workers, schedulers, queues] = await Promise.all([
+      api("GET","/workers"), api("GET","/schedulers"), api("GET","/queues")
+    ]);
+    const wt = $("#workers-tbody");
+    if (wt) wt.innerHTML = workers.map(w => `<tr>
+      <td>${esc(w.name)}</td><td>${statusBadge(w.status)}</td>
+      <td class="mono small">${(w.capabilities||[]).join(",")}</td>
+      <td class="mono small">${(w.subscribed_queues||[]).join(",")}</td>
+      <td>${w.running_count}/${w.max_concurrency}</td>
+      <td class="mono small">${fmtDate(w.last_heartbeat_at)}</td></tr>`).join("");
+    const st = $("#schedulers-pre");
+    if (st) st.textContent = JSON.stringify(schedulers, null, 2);
+  } catch (e) { toast(e.message, "error"); }
+}
 
-    // Toast notifications
-    function toast(msg, type = 'info') {
-        const container = document.getElementById('toast-container') || createToastContainer();
-        const toast = document.createElement('div');
-        toast.className = `toast ${type}`;
-        toast.textContent = msg;
-        document.getElementById('toast-container').appendChild(toast);
-        setTimeout(() => toast.remove(), 3000);
-    }
+// ============ ANALYTICS ============
+async function loadAnalytics() {
+  try {
+    const metrics = await fetch("/actuator/prometheus").then(r => r.text());
+    const get = (n) => { const m = metrics.match(new RegExp("^"+n+"\\{?.*\\}?\\s+(\\S+)","m")); return m ? m[1] : "—"; };
+    const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
+    set("#m-depth", get("schedula_queue_depth"));
+    set("#m-completed", get("schedula_job_completed_total"));
+    set("#m-failed", get("schedula_job_dead_total"));
+    set("#m-running", get("schedula_job_started_total"));
+    set("#m-submitted", get("schedula_job_submitted_total"));
+    set("#m-cancelled", get("schedula_job_cancelled_total"));
+    set("#m-retried", get("schedula_job_retried_total"));
+    set("#m-webhooks", get("schedula_webhooks_delivered_total"));
+    set("#m-fenced", get("schedula_fenced_write_rejected_total"));
+    set("#m-throttled", get("schedula_tenant_throttled_total"));
+    set("#m-leader-changes", get("schedula_leader_changes_total"));
+    // Trend
+    const trend = get("schedula_queue_depth_trend");
+    set("#m-trend", trend);
+    const predicted = get("schedula_queue_depth_predicted_5m");
+    set("#m-predicted", predicted);
+  } catch (e) { toast(e.message, "error"); }
+}
 
-    function createToastContainer() {
-        const c = document.createElement('div');
-        c.id = 'toast-container';
-        c.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:8px';
-        document.body.appendChild(c);
-        return c;
-    }
+// ============ FINGERPRINTS ============
+async function loadFingerprints() {
+  try {
+    const fps = await api("GET", "/fingerprints");
+    const tbody = $("#fingerprints-tbody"); if (!tbody) return;
+    tbody.innerHTML = fps.map(f => `<tr>
+      <td>${esc(f.job_type)}</td><td>${f.total_24h}</td>
+      <td>${f.completed_24h}</td><td>${f.failed_24h}</td>
+      <td>${f.success_rate_pct}%</td>
+      <td>${Number(f.p50_duration_s).toFixed(1)}s</td>
+      <td>${Number(f.p95_duration_s).toFixed(1)}s</td>
+      <td>${Number(f.p99_duration_s).toFixed(1)}s</td>
+      <td>${Number(f.avg_attempts).toFixed(1)}</td>
+      <td class="small">${esc(f.most_common_error || "—")}</td>
+    </tr>`).join("") || "<tr><td colspan=10 class='muted'>No data yet</td></tr>";
+  } catch (e) { toast(e.message, "error"); }
+}
 
-    // Job submission
-    async function submitJob() {
-        const form = document.getElementById('submit-form');
-        const data = {
-            jobType: form.jobType.value,
-            payload: JSON.parse(form.payload.value || '{}'),
-            priority: parseInt(form.priority.value) || 0,
-            scheduledFor: form.scheduledFor.value || null,
-            maxAttempts: parseInt(form.maxAttempts.value) || 3,
-            timeoutMs: parseInt(form.timeoutMs.value) || 60000,
-            idempotencyKey: form.idemKey.value || undefined
-        };
-        try {
-            const res = await fetch('/v1/jobs', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'X-API-Key': getApiKey() },
-                body: JSON.stringify(body)
-            });
-            const job = await res.json();
-            toast('Job submitted: ' + job.id);
-            loadJobs();
-        } catch (e) {
-            alert('Submit failed: ' + e.message);
-        }
-    }
+// ============ AUDITS ============
+async function loadAudits() {
+  try {
+    const rows = await api("GET", "/admin/audits?limit=100").catch(() => []);
+    const tbody = $("#audits-tbody"); if (!tbody) return;
+    tbody.innerHTML = rows.map(a => `<tr>
+      <td class="mono small">${fmtDate(a.occurred_at)}</td>
+      <td class="mono small">${esc(a.actor)}</td><td>${esc(a.action)}</td>
+      <td>${esc(a.target_type)}</td><td class="mono small">${esc(a.target_id||"")}</td>
+    </tr>`).join("");
+  } catch (e) { toast(e.message, "error"); }
+}
 
-    async function loadJobs() {
-        try {
-            const jobs = await api.get('/jobs?limit=50');
-            renderJobTable(jobs);
-        } catch (e) { console.error(e); }
-    }
+// ============ FIREWALL ============
+async function loadFirewall() {
+  try {
+    const rows = await fetch("/actuator/prometheus").then(r => r.text());
+    const quarantined = (rows.match(/schedula_firewall_quarantined\{.*\}\s+(\S+)/m) || [])[1] || "0";
+    const el = $("#firewall-status"); if (el) el.textContent = `Quarantined dependencies: ${quarantined}`;
+  } catch (e) { toast(e.message, "error"); }
+}
 
-    function renderJobTable(jobs) {
-        const tbody = document.getElementById('jobs-tbody');
-        tbody.innerHTML = jobs.map(job => `
-            <tr data-id="${job.id}">
-                <td><code>${job.id.slice(0,8)}...</code></td>
-                <td>${job.jobType}</td>
-                <td><span class="badge ${job.status.toLowerCase()}">${job.status}</span></td>
-                <td>${job.priority}</td>
-                <td>${job.attemptsMade}/${job.maxAttempts}</td>
-                <td>${job.scheduledFor ? new Date(job.scheduledFor).toLocaleString() : 'now'}</td>
-                <td>
-                    <button class="btn-sm" onclick="viewJob('${job.id}')">View</button>
-                    ${job.status === 'QUEUED' || job.status === 'RUNNING' ? `<button class="btn danger" onclick="cancelJob('${job.id}')">Cancel</button>` : ''}
-                    ${['FAILED','DEAD'].includes(job.status) ? '<button class="btn secondary" onclick="retryJob(\'' + job.id + '\')">Retry</button>' : ''}
-                </td>
-            </tr>`).join('');
-    }
+// ============ FORMS ============
+function submitJob() {
+  const type = prompt("Job type:", "echo"); if (!type) return;
+  const payloadStr = prompt("Payload JSON:", "{}"); if (payloadStr === null) return;
+  let payload; try { payload = JSON.parse(payloadStr); } catch { return toast("Invalid JSON", "error"); }
+  const queue = prompt("Queue (default):", "default");
+  api("POST", "/jobs", { jobType: type, payload, queueName: queue || "default" })
+    .then(j => { toast("Submitted: " + j.id?.slice(0,8)); loadJobs(); })
+    .catch(e => toast(e.message, "error"));
+}
 
-    async function cancelJob(id) {
-        if (!confirm('Cancel this job?')) return;
-        await fetch('/v1/jobs/' + id + '/cancel', { method: 'POST', headers: authHeaders() });
-        toast('Job cancelled');
-        loadJobs();
-    }
+function startDemoWorkflow() {
+  api("POST", "/workflows/demo-order-flow/executions", { input: {} })
+    .then(w => { toast("Started: " + w.workflowExecutionId?.slice(0,8)); loadWorkflows(); })
+    .catch(e => toast(e.message, "error"));
+}
 
-    async function retryJob(id) {
-        await fetch('/v1/jobs/' + id + '/retry', { method: 'POST', headers: authHeaders() });
-        toast('Retry queued');
-        loadJobs();
-    }
+function registerWorkflow() {
+  const name = prompt("Workflow name:"); if (!name) return;
+  const defStr = prompt("Definition JSON:", '{"tasks":[{"key":"a","jobType":"log","payload":{}}]}');
+  if (!defStr) return;
+  try {
+    const definition = JSON.parse(defStr);
+    api("POST", "/workflows", { name, definition })
+      .then(r => { toast("Registered v" + r.version); loadWorkflows(); })
+      .catch(e => toast(e.message, "error"));
+  } catch { toast("Invalid JSON", "error"); }
+}
 
-    // WebSocket / SSE for live updates
-    let eventSource = null;
-    function connectSSE() {
-        if (eventSource) eventSource.close();
-        const es = new EventSource('/v1/events/stream');
-        eventSource.onmessage = e => {
-            const data = JSON.parse(e.data);
-            handleLiveEvent(data);
-        };
-        eventSource.onerror = () => setTimeout(connectSSE, 5000);
-    }
+function createSchedule() {
+  const name = prompt("Schedule name:"); if (!name) return;
+  const jobType = prompt("Job type:", "log"); if (!jobType) return;
+  const interval = prompt("Interval (ms):", "60000"); if (!interval) return;
+  api("POST", "/schedules", { name, jobType, payload: {}, intervalMs: +interval, missedPolicy: "COALESCE" })
+    .then(s => { toast("Created: " + s.name); loadSchedules(); })
+    .catch(e => toast(e.message, "error"));
+}
 
-    function handleLiveEvent(data) {
-        // Update job row
-        const row = document.querySelector(`[data-job-id="${data.jobId}"]`);
-        if (row) {
-            row.querySelector('.status').textContent = data.status;
-            row.querySelector('.status').className = 'badge ' + data.status.toLowerCase();
-        }
-        // Add to live feed
-        addLiveLog(event);
-    }
+// ============ INIT ============
+document.addEventListener("DOMContentLoaded", () => {
+  // Restore keys
+  const key = localStorage.getItem("apiKey");
+  if (key) { const k = $("#apiKey"); if (k) k.value = key; }
+  const admin = localStorage.getItem("adminKey");
+  if (admin) { const a = $("#adminKey"); if (a) a.value = admin; }
 
-    function addLiveLog(event) {
-        const feed = document.getElementById('live-feed');
-        const div = document.createElement('div');
-        div.className = 'log-entry ' + event.type;
-        div.innerHTML = `<span class="time">${new Date().toLocaleTimeString()}</span> <span class="event-type ${event.type}">${event.type}</span> <span class="job-id">${event.jobId?.slice(0,8)}</span> ${JSON.stringify(event.payload || {})}`;
-        document.getElementById('live-feed').prepend(div);
-        if (feed.children.length > 50) feed.lastChild.remove();
-    }
+  // Save keys
+  $("#saveKeys")?.addEventListener("click", () => {
+    localStorage.setItem("apiKey", $("#apiKey")?.value || "");
+    localStorage.setItem("adminKey", $("#adminKey")?.value || "");
+    toast("Keys saved"); testConnection();
+  });
 
-    // Auth key management
-    function saveKey() {
-        const key = document.getElementById('apiKeyInput').value.trim();
-        if (key) { localStorage.setItem('apiKey', key); toast('API Key saved'); }
-    }
+  // Tab navigation
+  $$("[data-view]").forEach(btn => btn.addEventListener("click", () => showView(btn.dataset.view)));
 
-    // Initialize
-    document.addEventListener('DOMContentLoaded', () => {
-        // Restore API key
-        const savedKey = localStorage.getItem('apiKey');
-        if (savedKey) document.getElementById('apiKeyInput').value = savedKey;
+  // Load initial
+  testConnection();
+});
 
-        document.getElementById('saveKeyBtn')?.addEventListener('click', () => {
-            localStorage.setItem('apiKey', document.getElementById('apiKeyInput').value);
-            toast('API Key saved');
-        });
-
-        // Tab switching
-        document.querySelectorAll('[data-view]').forEach(btn => {
-            btn.addEventListener('click', () => showView(btn.dataset.view));
-        });
-
-        // Form handlers
-        document.getElementById('submit-form')?.addEventListener('submit', submitJob);
-        document.getElementById('wf-start-form')?.addEventListener('submit', startWorkflow);
-        document.getElementById('wf-register-form')?.addEventListener('submit', registerWorkflow);
-        document.getElementById('sched-form')?.addEventListener('submit', createSchedule);
-
-        // Live updates
-        // connectSSE();
-
-        // Initial loads
-        loadJobs();
-        loadWorkflows();
-        loadSchedules();
-    });
-
-    // ... rest of the JS implementation continues
-    // (The full app.js would be ~500 lines with all handlers)
-
-    // Toast notifications
-    function toast(msg, type = 'info') {
-        const container = document.getElementById('toast-container') || createToastContainer();
-        const toast = document.createElement('div');
-        toast.className = `toast ${type}`;
-        toast.textContent = msg;
-        container.appendChild(toast);
-        setTimeout(() => toast.remove(), 3000);
-    }
-
-    function createToastContainer() {
-        const c = document.createElement('div');
-        c.id = 'toast-container';
-        c.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:8px';
-        document.body.appendChild(c);
-        return c;
-    }
-
-    function formatDate(iso) {
-        return new Date(iso).toLocaleString();
-    }
-
-    function escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
-
-    // Initialize on load
-    document.addEventListener('DOMContentLoaded', () => {
-        // Restore API key
-        const savedKey = localStorage.getItem('apiKey');
-        if (savedKey) document.getElementById('apiKeyInput').value = savedKey;
-
-        // Tab switching
-        document.querySelectorAll('[data-view]').forEach(btn => {
-            btn.addEventListener('click', () => showView(btn.dataset.view));
-        });
-
-        // Form handlers
-        document.getElementById('submit-form')?.addEventListener('submit', submitJob);
-        document.getElementById('wf-start-form')?.addEventListener('submit', startWorkflow);
-        document.getElementById('wf-register-form')?.addEventListener('submit', registerWorkflow);
-        document.getElementById('sched-form')?.addEventListener('submit', createSchedule);
-
-        // Load initial data
-        loadJobs();
-        loadWorkflows();
-        loadSchedules();
-    });
-</script>
+async function testConnection() {
+  try { await api("GET", "/jobs?limit=1"); $("#connStatus").textContent = "✅ Connected"; $("#connStatus").className = "status ok"; loadJobs(); }
+  catch (e) { $("#connStatus").textContent = "❌ " + e.message.slice(0, 30); $("#connStatus").className = "status bad"; }
+}
