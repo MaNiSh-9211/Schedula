@@ -40,3 +40,6 @@ desktop.ini
 *~
 .flattened-pom.xml
 .mvn/timing.properties
+
+# --- security: local env & deps ---
+node_modules/
